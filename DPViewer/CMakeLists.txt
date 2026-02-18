@@ -19,6 +19,8 @@ string(REPLACE "." "" CUDA_ARCH_LIST "${INSTALLED_GPU_CCS_3}")
 SET(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_LIST})
 
 
+add_subdirectory(pybind11)
+
 list(APPEND CMAKE_PREFIX_PATH ${TORCH_PATH})
 
 find_package(Torch REQUIRED)
@@ -29,7 +31,6 @@ include_directories(
     ${TORCH_INCLUDE_DIRS} 
 ) 
 
-add_subdirectory(pybind11)
 add_subdirectory(dpviewer)
 
 

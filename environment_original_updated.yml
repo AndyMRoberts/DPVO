@@ -1,0 +1,16 @@
+name: dpvo
+channels:
+  - conda-forge
+dependencies:
+  - pip
+  - pip:
+    - tensorboard
+    - numba
+    - tqdm
+    - einops
+    - pypose
+    - kornia
+    - plyfile
+    - evo
+    - opencv-python
+    - yacs

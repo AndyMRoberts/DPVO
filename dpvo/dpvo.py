@@ -91,7 +91,7 @@ class DPVO:
         # load network from checkpoint file
         if isinstance(network, str):
             from collections import OrderedDict
-            state_dict = torch.load(network)
+            state_dict = torch.load(network, weights_only=True)
             new_state_dict = OrderedDict()
             for k, v in state_dict.items():
                 if "update.lmbda" not in k:

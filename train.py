@@ -55,7 +55,7 @@ def train(args):
     net.cuda()
 
     if args.ckpt is not None:
-        state_dict = torch.load(args.ckpt)
+        state_dict = torch.load(args.ckpt, weights_only=True)
         new_state_dict = OrderedDict()
         for k, v in state_dict.items():
             new_state_dict[k.replace('module.', '')] = v
