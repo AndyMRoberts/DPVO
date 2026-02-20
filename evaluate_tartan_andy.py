@@ -1,5 +1,6 @@
 import datetime
 import glob
+import json
 import os
 import os.path as osp
 from pathlib import Path
@@ -73,7 +74,8 @@ def ate(traj_ref, traj_est):
 
 
 @torch.no_grad()
-def evaluate(config, net, split="validation", trials=1, plot=False, save=False):
+def evaluate(config, net, split="validation", trials=1, plot=False, save=False,
+             run_dir=None, datapath=None, gt_path=None):
 
     if config is None:
         config = cfg
@@ -86,6 +88,7 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False):
 
     results = {}
     all_results = []
+    total_frames = 0
     for i, scene in enumerate(scenes):
 
         results[scene] = []
@@ -93,13 +96,18 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False):
 
             # estimated trajectory
             if split == 'test':
-                data_root = "/mnt/data/datasets/agricultural/tartanair"
+                data_root = datapath or "/mnt/data/datasets/agricultural/tartanair"
+                gt_root = gt_path or osp.join(data_root, "mono_gt")
                 scene_path = os.path.join(data_root, "tartanair_mono_track", scene)
-                traj_ref = osp.join(data_root, "mono_gt", scene + ".txt")
-            
+                traj_ref = osp.join(gt_root, scene + ".txt")
             elif split == 'validation':
-                scene_path = os.path.join("datasets/TartanAir", scene, "image_left")
-                traj_ref = osp.join("datasets/TartanAir", scene, "pose_left.txt")
+                data_root = datapath or "datasets/TartanAir"
+                scene_path = os.path.join(data_root, scene, "image_left")
+                traj_ref = osp.join(gt_path or data_root, scene, "pose_left.txt")
+            else:
+                data_root = datapath or "datasets/TartanAir"
+                scene_path = os.path.join(data_root, scene, "image_left")
+                traj_ref = osp.join(gt_path or data_root, scene, "pose_left.txt")
 
             n_imgs = len(glob.glob(osp.join(scene_path, "*.png")))
             if n_imgs == 0:
@@ -107,6 +115,7 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False):
 
             # run the slam system
             traj_est, tstamps = run(scene_path, config, net, viz=False, show_img=False)
+            total_frames += len(tstamps)
 
             PERM = [1, 2, 0, 4, 5, 3, 6] # ned -> xyz
             traj_ref = np.loadtxt(traj_ref, delimiter=" ")[::STRIDE, PERM]
@@ -153,6 +162,17 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False):
     results_dict["AUC"] = np.maximum(1 - np.array(ates), 0).mean()
     results_dict["AVG"] = np.mean(xs)
 
+    if run_dir:
+        os.makedirs(run_dir, exist_ok=True)
+        ate_results = {
+            "total_frames": total_frames,
+            "results": {k: float(v) for k, v in results_dict.items()},
+            "all_results": [float(x) for x in all_results],
+            "per_scene": {k: [float(x) for x in v] for k, v in results.items()},
+        }
+        with open(osp.join(run_dir, "ate_results.json"), "w") as f:
+            json.dump(ate_results, f, indent=2)
+
     return results_dict
 
 
@@ -171,6 +191,12 @@ if __name__ == '__main__':
     parser.add_argument('--plot', action="store_true")
     parser.add_argument('--opts', nargs='+', default=[])
     parser.add_argument('--save_trajectory', action="store_true")
+    parser.add_argument('--run_dir', type=str, default=None,
+                        help="Directory to write ate_results.json and run artifacts")
+    parser.add_argument('--datapath', type=str, default=None,
+                        help="Data root (overrides default TartanAir path)")
+    parser.add_argument('--gt_path', type=str, default=None,
+                        help="Ground truth root or file (overrides default)")
     args = parser.parse_args()
 
     cfg.merge_from_file(args.config)
@@ -183,11 +209,12 @@ if __name__ == '__main__':
     torch.manual_seed(1234)
 
     if args.id >= 0:
-        data_root = "/mnt/data/datasets/agricultural/tartanair"
+        data_root = args.datapath or "/mnt/data/datasets/agricultural/tartanair"
+        gt_root = args.gt_path or osp.join(data_root, "mono_gt")
         scene_path = os.path.join(data_root, "tartanair_mono_track", test_split[args.id])
         traj_est, tstamps = run(scene_path, cfg, args.weights, viz=args.viz, show_img=args.show_img)
 
-        traj_ref = osp.join(data_root, "mono_gt", test_split[args.id] + ".txt")
+        traj_ref = osp.join(gt_root, test_split[args.id] + ".txt")
         traj_ref = np.loadtxt(traj_ref, delimiter=" ")[::STRIDE,[1, 2, 0, 4, 5, 3, 6]]
 
         traj_est = PoseTrajectory3D(
@@ -201,9 +228,22 @@ if __name__ == '__main__':
             timestamps=tstamps)
 
         # do evaluation
-        print(ate(traj_ref, traj_est))
+        ate_score = ate(traj_ref, traj_est)
+        print(ate_score)
+
+        if args.run_dir:
+            os.makedirs(args.run_dir, exist_ok=True)
+            ate_results = {
+                "total_frames": len(tstamps),
+                "results": {"ATE": float(ate_score)},
+                "all_results": [float(ate_score)],
+                "per_scene": {test_split[args.id]: [float(ate_score)]},
+            }
+            with open(osp.join(args.run_dir, "ate_results.json"), "w") as f:
+                json.dump(ate_results, f, indent=2)
 
     else:
-        results = evaluate(cfg, args.weights, split=args.split, trials=args.trials, plot=args.plot, save=args.save_trajectory)
+        results = evaluate(cfg, args.weights, split=args.split, trials=args.trials, plot=args.plot, save=args.save_trajectory,
+                          run_dir=args.run_dir, datapath=args.datapath, gt_path=args.gt_path)
         for k in results:
             print(k, results[k])
