@@ -236,6 +236,8 @@ def main():
         with open(ate_path) as f:
             ate_data = json.load(f)
         total_frames = ate_data.get("total_frames")
+    
+    
 
     if profiler_instance is not None:
         profiler_instance.stop(num_frames=total_frames)

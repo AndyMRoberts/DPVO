@@ -1,5 +1,12 @@
 # Modifications in order to run heterogeneously
 
+To record baseline power readings 1 minute
+```
+python andy/manual_test.py
+```
+
+
+
 raw file
 ```bash
 python evaluate_tartan_andy.py \
@@ -21,5 +28,6 @@ python launch_evaluation.py \
     --power_log \
     --viz \
     --show_img \
-    --save_trajectory
+    --save_trajectory \
+    --plot
 ```

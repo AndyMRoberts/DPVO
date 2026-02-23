@@ -137,20 +137,20 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False,
 
             if plot:
                 scene_name = '_'.join(scene.split('/')[1:]).title() if split == 'validation' else scene
-                Path("trajectory_plots").mkdir(exist_ok=True)
+                Path(f"{run_dir}/trajectory_data").mkdir(exist_ok=True)
                 plot_trajectory(traj_est, traj_ref, f"TartanAir {scene_name.replace('_', ' ')} Trial #{j+1} (ATE: {ate_score:.03f})",
-                                f"trajectory_plots/TartanAir_{scene_name}_Trial{j+1:02d}.pdf", align=True, correct_scale=True)
+                                f"{run_dir}/trajectory_data/TartanAir_{scene_name}_Trial{j+1:02d}.pdf", align=True, correct_scale=True)
 
             if save:
-                Path("saved_trajectories").mkdir(exist_ok=True)
-                file_interface.write_tum_trajectory_file(f"saved_trajectories/TartanAir_{scene_name}_Trial{j+1:02d}.txt", traj_est)
+                Path(f"{run_dir}/trajectory_data").mkdir(exist_ok=True)
+                file_interface.write_tum_trajectory_file(f"{run_dir}/trajectory_data/TartanAir_{scene_name}_Trial{j+1:02d}.txt", traj_est)
 
         print(scene, sorted(results[scene]))
 
     results_dict = dict([("Tartan/{}".format(k), np.median(v)) for (k, v) in results.items()])
 
     # write output to file with timestamp
-    with open(osp.join("TartanAirResults", datetime.datetime.now().strftime('%m-%d-%I%p.txt')), "w") as f:
+    with open(osp.join(f"{run_dir}/trajectory_data", datetime.datetime.now().strftime('%m-%d-%I%p.txt')), "w") as f:
         f.write(','.join([str(x) for x in all_results]))
 
     xs = []
