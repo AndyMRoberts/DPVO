@@ -11,12 +11,14 @@ output_dir = f'{os.path.dirname(os.path.abspath(__file__))}/runs'
 # GPU memory upper limit is read automatically from the system.
 # Percentage metrics (CPU %, GPU %, RAM %) are always capped at 100.
 p = Profiler(output_dir, frequency_hz=2.0, title="Profiler Reference and Initial Test",
-             cpu_power_max_w=150.0, gpu_power_max_w=300.0)
+             cpu_power_max_w=200.0, 
+             gpu_power_max_w=200.0,
+             gpu_memory_total_gb= 16.376)
 print(f'Data will be saved to output directory: {output_dir}')
 
 #first record a 10s reference dataset
 print(f'Recording reference to {output_dir}/reference')
-ref_dir = p.record_reference(duration_seconds=60)
+ref_dir = p.record_reference(duration_seconds=5)
 
 # option to store own data in reference directory
 with open(f'{ref_dir}/extra_data.txt', 'w') as f:

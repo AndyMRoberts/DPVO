@@ -47,8 +47,8 @@ def video_iterator(imagedir, ext=".png", preload=True):
         yield image.cuda(), intrinsics.cuda()
 
 @torch.no_grad()
-def run(imagedir, cfg, network, viz=False, show_img=False):
-    slam = DPVO(cfg, network, ht=480, wd=640, viz=viz)
+def run(imagedir, cfg, network, viz=False, show_img=False, onnx_dir=None):
+    slam = DPVO(cfg, network, ht=480, wd=640, viz=viz, onnx_dir=onnx_dir)
     n_frames = len(glob.glob(osp.join(imagedir, "*.png"))) // STRIDE
 
     for t, (image, intrinsics) in enumerate(video_iterator(imagedir)):
@@ -75,7 +75,7 @@ def ate(traj_ref, traj_est):
 
 @torch.no_grad()
 def evaluate(config, net, split="validation", trials=1, plot=False, save=False,
-             run_dir=None, datapath=None, gt_path=None):
+             run_dir=None, datapath=None, gt_path=None, onnx_dir=None):
 
     if config is None:
         config = cfg
@@ -114,7 +114,7 @@ def evaluate(config, net, split="validation", trials=1, plot=False, save=False,
                 raise FileNotFoundError(f"No .png images found in {scene_path} (exists: {osp.exists(scene_path)})")
 
             # run the slam system
-            traj_est, tstamps = run(scene_path, config, net, viz=False, show_img=False)
+            traj_est, tstamps = run(scene_path, config, net, viz=False, show_img=False, onnx_dir=onnx_dir)
             total_frames += len(tstamps)
 
             PERM = [1, 2, 0, 4, 5, 3, 6] # ned -> xyz
@@ -197,14 +197,23 @@ if __name__ == '__main__':
                         help="Data root (overrides default TartanAir path)")
     parser.add_argument('--gt_path', type=str, default=None,
                         help="Ground truth root or file (overrides default)")
+    parser.add_argument('--backend', choices=['pytorch', 'onnx'], default='pytorch',
+                        help='Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)')
+    parser.add_argument('--onnx_dir', type=str, default='andy/onnx',
+                        help='Directory containing fnet.onnx and inet.onnx (used when --backend onnx)')
     args = parser.parse_args()
 
     cfg.merge_from_file(args.config)
     cfg.BACKEND_THRESH = args.backend_thresh
     cfg.merge_from_list(args.opts)
 
+    onnx_dir = os.path.abspath(args.onnx_dir) if args.backend == 'onnx' else None
+    if onnx_dir and not os.path.isdir(onnx_dir):
+        raise FileNotFoundError(f"ONNX dir not found: {onnx_dir}. Run andy/onnx_conversion.ipynb and set --onnx_dir.")
+
     print("Running with config...")
     print(cfg)
+    print("Backend:", args.backend, f"(onnx_dir={onnx_dir})" if onnx_dir else "")
 
     torch.manual_seed(1234)
 
@@ -212,7 +221,7 @@ if __name__ == '__main__':
         data_root = args.datapath or "/mnt/data/datasets/agricultural/tartanair"
         gt_root = args.gt_path or osp.join(data_root, "mono_gt")
         scene_path = os.path.join(data_root, "tartanair_mono_track", test_split[args.id])
-        traj_est, tstamps = run(scene_path, cfg, args.weights, viz=args.viz, show_img=args.show_img)
+        traj_est, tstamps = run(scene_path, cfg, args.weights, viz=args.viz, show_img=args.show_img, onnx_dir=onnx_dir)
 
         traj_ref = osp.join(gt_root, test_split[args.id] + ".txt")
         traj_ref = np.loadtxt(traj_ref, delimiter=" ")[::STRIDE,[1, 2, 0, 4, 5, 3, 6]]
@@ -244,6 +253,6 @@ if __name__ == '__main__':
 
     else:
         results = evaluate(cfg, args.weights, split=args.split, trials=args.trials, plot=args.plot, save=args.save_trajectory,
-                          run_dir=args.run_dir, datapath=args.datapath, gt_path=args.gt_path)
+                          run_dir=args.run_dir, datapath=args.datapath, gt_path=args.gt_path, onnx_dir=onnx_dir)
         for k in results:
             print(k, results[k])

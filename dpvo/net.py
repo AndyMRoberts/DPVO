@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import OrderedDict
+from functools import partial
 
 import torch_scatter
 from torch_scatter import scatter_sum
@@ -19,7 +20,7 @@ from .utils import *
 from .ba import BA
 from . import projective_ops as pops
 
-autocast = torch.cuda.amp.autocast
+autocast = partial(torch.amp.autocast, "cuda")
 import matplotlib.pyplot as plt
 
 DIM = 384
@@ -154,6 +155,47 @@ class Patchifier(nn.Module):
         if return_color:
             return fmap, gmap, imap, patches, index, clr
 
+        return fmap, gmap, imap, patches, index
+
+    def forward_from_maps(self, fmap, imap, images, patches_per_image=80, disps=None, centroid_sel_strat='RANDOM', return_color=False):
+        """Same as forward but using precomputed fmap and imap (e.g. from ONNX encoders)."""
+        fmap = fmap / 4.0
+        imap = imap / 4.0
+        b, n, c, h, w = fmap.shape
+        P = self.patch_size
+
+        if centroid_sel_strat == 'GRADIENT_BIAS':
+            g = self.__image_gradient(images)
+            x = torch.randint(1, w-1, size=[n, 3*patches_per_image], device=fmap.device)
+            y = torch.randint(1, h-1, size=[n, 3*patches_per_image], device=fmap.device)
+            coords = torch.stack([x, y], dim=-1).float()
+            g = altcorr.patchify(g[0,:,None], coords, 0).view(n, 3 * patches_per_image)
+            ix = torch.argsort(g, dim=1)
+            x = torch.gather(x, 1, ix[:, -patches_per_image:])
+            y = torch.gather(y, 1, ix[:, -patches_per_image:])
+        elif centroid_sel_strat == 'RANDOM':
+            x = torch.randint(1, w-1, size=[n, patches_per_image], device=fmap.device)
+            y = torch.randint(1, h-1, size=[n, patches_per_image], device=fmap.device)
+        else:
+            raise NotImplementedError(f"Patch centroid selection not implemented: {centroid_sel_strat}")
+
+        coords = torch.stack([x, y], dim=-1).float()
+        imap = altcorr.patchify(imap[0], coords, 0).view(b, -1, DIM, 1, 1)
+        gmap = altcorr.patchify(fmap[0], coords, P//2).view(b, -1, 128, P, P)
+
+        if return_color:
+            clr = altcorr.patchify(images[0], 4*(coords + 0.5), 0).view(b, -1, 3)
+
+        if disps is None:
+            disps = torch.ones(b, n, h, w, device=fmap.device)
+        grid, _ = coords_grid_with_index(disps, device=fmap.device)
+        patches = altcorr.patchify(grid[0], coords, P//2).view(b, -1, 3, P, P)
+
+        index = torch.arange(n, device=fmap.device).view(n, 1)
+        index = index.repeat(1, patches_per_image).reshape(-1)
+
+        if return_color:
+            return fmap, gmap, imap, patches, index, clr
         return fmap, gmap, imap, patches, index
 
 

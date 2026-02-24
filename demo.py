@@ -22,7 +22,7 @@ def show_image(image, t=0):
     cv2.waitKey(t)
 
 @torch.no_grad()
-def run(cfg, network, imagedir, calib, stride=1, skip=0, viz=False, timeit=False):
+def run(cfg, network, imagedir, calib, stride=1, skip=0, viz=False, timeit=False, onnx_dir=None):
 
     slam = None
     queue = Queue(maxsize=8)
@@ -43,7 +43,7 @@ def run(cfg, network, imagedir, calib, stride=1, skip=0, viz=False, timeit=False
 
         if slam is None:
             _, H, W = image.shape
-            slam = DPVO(cfg, network, ht=H, wd=W, viz=viz)
+            slam = DPVO(cfg, network, ht=H, wd=W, viz=viz, onnx_dir=onnx_dir)
 
         with Timer("SLAM", enabled=timeit):
             slam(t, image, intrinsics)
@@ -73,15 +73,24 @@ if __name__ == '__main__':
     parser.add_argument('--save_ply', action="store_true")
     parser.add_argument('--save_colmap', action="store_true")
     parser.add_argument('--save_trajectory', action="store_true")
+    parser.add_argument('--backend', choices=['pytorch', 'onnx'], default='pytorch',
+                        help='Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)')
+    parser.add_argument('--onnx_dir', type=str, default='andy/onnx',
+                        help='Directory containing fnet.onnx and inet.onnx (used when --backend onnx)')
     args = parser.parse_args()
 
     cfg.merge_from_file(args.config)
     cfg.merge_from_list(args.opts)
 
+    onnx_dir = os.path.abspath(args.onnx_dir) if args.backend == 'onnx' else None
+    if onnx_dir and not os.path.isdir(onnx_dir):
+        raise FileNotFoundError(f"ONNX dir not found: {onnx_dir}. Run andy/onnx_conversion.ipynb and set --onnx_dir.")
+
     print("Running with config...")
     print(cfg)
+    print("Backend:", args.backend, f"(onnx_dir={onnx_dir})" if onnx_dir else "")
 
-    (poses, tstamps), (points, colors, calib) = run(cfg, args.network, args.imagedir, args.calib, args.stride, args.skip, args.viz, args.timeit)
+    (poses, tstamps), (points, colors, calib) = run(cfg, args.network, args.imagedir, args.calib, args.stride, args.skip, args.viz, args.timeit, onnx_dir=onnx_dir)
     trajectory = PoseTrajectory3D(positions_xyz=poses[:,:3], orientations_quat_wxyz=poses[:, [6, 3, 4, 5]], timestamps=tstamps)
 
     if args.save_ply:

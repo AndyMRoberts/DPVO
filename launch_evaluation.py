@@ -95,6 +95,7 @@ def _write_power_summary_txt(run_dir, meta):
         f"total_frames: {num_frames if num_frames is not None else 'N/A'}",
         f"energy_per_frame_J: {_format_with_stdev(ef_avg, ef_avg_std)}",
         f"energy_per_frame_mJ: {_format_with_stdev(ef_mj, ef_mj_std)}",
+        f"frames_per_second: {num_frames/run_time_s if (num_frames is not None and run_time_s is not None and run_time_s > 0) else 'N/A'}",
     ]
     with open(txt_path, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -145,6 +146,10 @@ def main():
                         help="Extra config options (key value pairs)")
     parser.add_argument("--power_log", action="store_true",
                         help="Profile CPU/GPU power and metrics during run. Requires 'profiler' package.")
+    parser.add_argument("--backend", choices=["pytorch", "onnx"], default="pytorch",
+                        help="Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)")
+    parser.add_argument("--onnx_dir", type=str, default="andy/onnx",
+                        help="Directory containing fnet.onnx and inet.onnx (used when --backend onnx)")
 
     args = parser.parse_args()
 
@@ -160,7 +165,7 @@ def main():
             print("Error: --power_log requires the 'profiler' package. Install it or add it to PYTHONPATH.", file=sys.stderr)
             sys.exit(1)
         Profiler.verify_setup() # ensures all data can be accessed before running
-        profiler_instance = Profiler(runs_base, frequency_hz=2.0, title=safe_name,  cpu_power_max_w=150.0, gpu_power_max_w=200.0)
+        profiler_instance = Profiler(runs_base, frequency_hz=2.0, title=safe_name,  cpu_power_max_w=200.0, gpu_power_max_w=200.0, gpu_memory_total_gb=16.376)
         ref_dir = os.path.join(runs_base, "reference")
         use_reference = os.path.isdir(ref_dir)
         run_dir = profiler_instance.start(use_reference=use_reference)
@@ -180,6 +185,8 @@ def main():
         "split": args.split,
         "trials": args.trials,
         "backend_thresh": args.backend_thresh,
+        "backend": args.backend,
+        "onnx_dir": args.onnx_dir,
         "plot": args.plot,
         "save_trajectory": args.save_trajectory,
         "viz": args.viz,
@@ -206,6 +213,8 @@ def main():
         "--split", args.split,
         "--trials", str(args.trials),
         "--backend_thresh", str(args.backend_thresh),
+        "--backend", args.backend,
+        "--onnx_dir", args.onnx_dir,
         "--id", str(args.id),
     ]
     if args.datapath:
@@ -237,7 +246,7 @@ def main():
             ate_data = json.load(f)
         total_frames = ate_data.get("total_frames")
     
-    
+
 
     if profiler_instance is not None:
         profiler_instance.stop(num_frames=total_frames)
