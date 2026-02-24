@@ -95,7 +95,7 @@ def _write_power_summary_txt(run_dir, meta):
         f"total_frames: {num_frames if num_frames is not None else 'N/A'}",
         f"energy_per_frame_J: {_format_with_stdev(ef_avg, ef_avg_std)}",
         f"energy_per_frame_mJ: {_format_with_stdev(ef_mj, ef_mj_std)}",
-        f"frames_per_second: {num_frames/run_time_s if (num_frames is not None and run_time_s is not None and run_time_s > 0) else 'N/A'}",
+        f"frames_per_second: {num_frames/run_time_s if (num_frames is not None and run_time_s is not None and run_time_s > 0) else 'N/A'}"
     ]
     with open(txt_path, "w") as f:
         f.write("\n".join(lines) + "\n")
