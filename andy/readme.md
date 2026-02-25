@@ -5,6 +5,15 @@ To record baseline power readings 1 minute
 python andy/manual_test.py
 ```
 
+baseline onnx/pytorch features only models running
+```bash
+python launch_evaluation.py \
+    --test_run_name tartan_features_only_baselining_onnx \
+    --weights dpvo.pth \
+    --split test \
+    --power_log \
+    --file_to_run /home/campus.ncl.ac.uk/c4071391/Projects/DPVO/dpvo/onnx_features_only.py
+```
 
 
 raw file
