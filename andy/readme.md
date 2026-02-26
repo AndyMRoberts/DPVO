@@ -12,7 +12,9 @@ python launch_evaluation.py \
     --weights dpvo.pth \
     --split test \
     --power_log \
-    --file_to_run /home/campus.ncl.ac.uk/c4071391/Projects/DPVO/dpvo/onnx_features_only.py
+    --file_to_run onnx_features_only \
+    --backend onnx \
+    --onnx_dir andy/onnx
 ```
 
 

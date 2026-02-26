@@ -4,7 +4,7 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from functools import partial
 
-from dpvo.utils import *
+# from dpvo.utils import *
 
 mp.set_start_method('spawn', True)
 
@@ -29,8 +29,8 @@ class DPVO_images_only:
         self.ht = ht    # image height
         self.wd = wd    # image width
 
-        DIM = self.DIM
-        RES = self.RES
+        DIM = 384
+        RES = 4
 
         ### state attributes ###
         self.tlist = []
@@ -106,6 +106,8 @@ class DPVO_images_only:
                 feed = {"images": image.cpu().numpy().astype(np.float32)}
                 fmap = torch.from_numpy(self._onnx_fnet.run(None, feed)[0]).cuda().to(image.dtype)
                 imap = torch.from_numpy(self._onnx_inet.run(None, feed)[0]).cuda().to(image.dtype)
+        
+        self.tlist.append(tstamp)
         
 
 import datetime

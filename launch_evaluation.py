@@ -150,7 +150,7 @@ def main():
                         help="Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)")
     parser.add_argument("--onnx_dir", type=str, default="andy/onnx",
                         help="Directory containing fnet.onnx and inet.onnx (used when --backend onnx)")
-    parser.add_argument("--file_to_run", type=str, default="evaluate_tartan_andy.py", help="the evaluation file to be launched")
+    parser.add_argument("--file_to_run", type=str, default=None, help="the evaluation file to be launched")
     
     args = parser.parse_args()
 
@@ -197,6 +197,11 @@ def main():
         "timestamp": timestamp,
         "file_to_run": args.file_to_run,
     }
+    if args.file_to_run:
+        cmd_initial = [sys.executable, '-m', f'dpvo.{args.file_to_run}']
+    else:
+        args.file_to_run = 'evaluate_tartan_andy.py'
+        cmd_initial = [sys.executable, os.path.join(project_root, args.file_to_run)]
 
     metadata_txt_path = os.path.join(run_dir, "metadata.txt")
     with open(metadata_txt_path, "w") as f:
@@ -206,9 +211,7 @@ def main():
             f.write(f"{k}: {v}\n")
         f.write("\n")
 
-    eval_script = os.path.join(project_root, args.file_to_run)
-    cmd = [
-        sys.executable, eval_script,
+    cmd = cmd_initial + [
         "--run_dir", run_dir,
         "--weights", args.weights,
         "--config", args.config,
