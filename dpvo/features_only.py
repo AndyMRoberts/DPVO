@@ -4,7 +4,12 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from functools import partial
 
-# from dpvo.utils import *
+from . import altcorr, fastba, lietorch
+from . import projective_ops as pops
+from .lietorch import SE3
+from .net import VONet
+from .patchgraph import PatchGraph
+from .utils import *
 
 mp.set_start_method('spawn', True)
 
@@ -18,7 +23,7 @@ class DPVO_images_only:
         self.cfg = cfg
         self._onnx_fnet = None
         self._onnx_inet = None
-        self.load_weights(onnx_dir=onnx_dir)
+        self.load_weights(network, onnx_dir=onnx_dir)
         self.is_initialized = False
         self.enable_timing = False
         torch.set_num_threads(2)
@@ -29,8 +34,8 @@ class DPVO_images_only:
         self.ht = ht    # image height
         self.wd = wd    # image width
 
-        DIM = 384
-        RES = 4
+        DIM = self.DIM
+        RES = self.RES
 
         ### state attributes ###
         self.tlist = []
@@ -43,8 +48,34 @@ class DPVO_images_only:
         self.image_ = torch.zeros(self.ht, self.wd, 3, dtype=torch.uint8, device="cpu")
 
         ### network attributes ###
-    def load_weights(self, onnx_dir):
-        self._load_onnx_encoders(onnx_dir)
+    
+    def load_weights(self, network, onnx_dir=None):
+        # load network from checkpoint file
+        if isinstance(network, str):
+            from collections import OrderedDict
+            state_dict = torch.load(network, weights_only=True)
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                if "update.lmbda" not in k:
+                    new_state_dict[k.replace('module.', '')] = v
+
+            self.network = VONet()
+            self.network.load_state_dict(new_state_dict)
+
+        else:
+            self.network = network
+
+        # steal network attributes
+        self.DIM = self.network.DIM
+        self.RES = self.network.RES
+        self.P = self.network.P
+
+        self.network.cuda()
+        self.network.eval()
+
+         # optional ONNX encoders (fnet, inet) for hybrid PyTorch+ONNX
+        if onnx_dir:
+            self._load_onnx_encoders(onnx_dir)
 
     def _load_onnx_encoders(self, onnx_dir):
         import os
@@ -106,7 +137,12 @@ class DPVO_images_only:
                 feed = {"images": image.cpu().numpy().astype(np.float32)}
                 fmap = torch.from_numpy(self._onnx_fnet.run(None, feed)[0]).cuda().to(image.dtype)
                 imap = torch.from_numpy(self._onnx_inet.run(None, feed)[0]).cuda().to(image.dtype)
-        
+            else:
+                fmap, gmap, imap, patches, _, clr = \
+                    self.network.patchify(image,
+                        patches_per_image=self.cfg.PATCHES_PER_FRAME,
+                        centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
+                        return_color=True)
         self.tlist.append(tstamp)
         
 

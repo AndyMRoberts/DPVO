@@ -12,9 +12,18 @@ python launch_evaluation.py \
     --weights dpvo.pth \
     --split test \
     --power_log \
-    --file_to_run onnx_features_only \
+    --file_to_run features_only \
     --backend onnx \
     --onnx_dir andy/onnx
+```
+
+```bash
+python launch_evaluation.py \
+    --test_run_name tartan_features_only_baselining_pytorch \
+    --weights dpvo.pth \
+    --split test \
+    --power_log \
+    --file_to_run features_only
 ```
 
 
