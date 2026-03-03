@@ -51,6 +51,7 @@ class PatchLayer(torch.autograd.Function):
 def patchify(net, coords, radius, mode='bilinear'):
     """ extract patches """
 
+    # apply is a @classmethod override, 
     patches = PatchLayer.apply(net, coords, radius)
 
     if mode == 'bilinear':
