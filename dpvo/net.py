@@ -137,10 +137,12 @@ class Patchifier(nn.Module):
             raise NotImplementedError(f"Patch centroid selection not implemented: {centroid_sel_strat}")
 
         coords = torch.stack([x, y], dim=-1).float()
+        # gets feature and contect maps in latent space at latent resolution for image [0]
         imap = altcorr.patchify(imap[0], coords, 0).view(b, -1, DIM, 1, 1)
         gmap = altcorr.patchify(fmap[0], coords, P//2).view(b, -1, 128, P, P)
 
         if return_color:
+            # gets rgb colour for each patch in image res. r=0 is 1x1 patch
             clr = altcorr.patchify(images[0], 4*(coords + 0.5), 0).view(b, -1, 3)
 
         if disps is None:
@@ -180,6 +182,7 @@ class Patchifier(nn.Module):
             raise NotImplementedError(f"Patch centroid selection not implemented: {centroid_sel_strat}")
 
         coords = torch.stack([x, y], dim=-1).float()
+        # a - gets feature space per batch
         imap = altcorr.patchify(imap[0], coords, 0).view(b, -1, DIM, 1, 1)
         gmap = altcorr.patchify(fmap[0], coords, P//2).view(b, -1, 128, P, P)
 
@@ -189,6 +192,7 @@ class Patchifier(nn.Module):
         if disps is None:
             disps = torch.ones(b, n, h, w, device=fmap.device)
         grid, _ = coords_grid_with_index(disps, device=fmap.device)
+        # a - gets the patch coordinates rather than the patches themselves?
         patches = altcorr.patchify(grid[0], coords, P//2).view(b, -1, 3, P, P)
 
         index = torch.arange(n, device=fmap.device).view(n, 1)

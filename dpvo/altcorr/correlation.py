@@ -1,5 +1,6 @@
 import torch
 import cuda_corr
+import .correlation_mod
 
 class CorrLayer(torch.autograd.Function):
     @staticmethod
@@ -52,7 +53,13 @@ def patchify(net, coords, radius, mode='bilinear'):
     """ extract patches """
 
     # apply is a @classmethod override, 
-    patches = PatchLayer.apply(net, coords, radius)
+    if torch.no_grad:
+        # if on inference only (for onnx export) then use native pytroch implementation
+        # todo a
+        patches = correlation_mod.patchify_forward_pytorch(net, coords, radius)
+    else:
+        patches = PatchLayer.apply(net, coords, radius)
+
 
     if mode == 'bilinear':
         offset = (coords - coords.floor()).to(net.device)

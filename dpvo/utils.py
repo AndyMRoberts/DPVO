@@ -38,6 +38,7 @@ def coords_grid(b, n, h, w, **kwargs):
 
 def coords_grid_with_index(d, **kwargs):
     """ coordinate grid with frame index"""
+    # andy - seems like only the d-related things need recalcing each time
     b, n, h, w = d.shape
     i = torch.ones_like(d)
     x = torch.arange(0, w, dtype=torch.float, **kwargs)
@@ -46,7 +47,7 @@ def coords_grid_with_index(d, **kwargs):
     y, x = torch.stack(torch.meshgrid(y, x, indexing="ij"))
     y = y.view(1, 1, h, w).repeat(b, n, 1, 1)
     x = x.view(1, 1, h, w).repeat(b, n, 1, 1)
-
+    # above this is the same for every iteration, possible optimisation
     coords = torch.stack([x, y, d], dim=2)
     index = torch.arange(0, n, dtype=torch.float, **kwargs)
     index = index.view(1, n, 1, 1, 1).repeat(b, 1, 1, h, w)
