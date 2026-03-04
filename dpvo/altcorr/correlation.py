@@ -1,6 +1,6 @@
 import torch
 import cuda_corr
-import .correlation_mod
+from . import correlation_mod
 
 class CorrLayer(torch.autograd.Function):
     @staticmethod

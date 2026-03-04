@@ -38,7 +38,7 @@ python evaluate_tartan_andy.py \
     --viz
 ```
 
-with launch file (power logging, backend options)
+with onnx
 
 ```bash
 python launch_evaluation.py \
@@ -56,7 +56,8 @@ python launch_evaluation.py \
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_offline_pytorch \
+    --test_run_name tartan_mono_offline_pytorch_only \
+    --description "running with patchify moved to pytorch" \
     --weights dpvo.pth \
     --split test \
     --power_log \

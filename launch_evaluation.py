@@ -151,6 +151,7 @@ def main():
     parser.add_argument("--onnx_dir", type=str, default="andy/onnx",
                         help="Directory containing fnet.onnx and inet.onnx (used when --backend onnx)")
     parser.add_argument("--file_to_run", type=str, default=None, help="the evaluation file to be launched")
+    parser.add_argument("--description", type=str, default="No desription provided")
     
     args = parser.parse_args()
 
@@ -178,6 +179,7 @@ def main():
 
     params = {
         "test_run_name": args.test_run_name,
+        "description": args.description, 
         "run_dir": run_dir,
         "datapath": args.datapath,
         "gt_path": args.gt_path,
