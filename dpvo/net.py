@@ -108,13 +108,14 @@ class Patchifier(nn.Module):
         g = F.avg_pool2d(g, 4, 4)
         return g
 
-    def forward(self, images, patches_per_image=80, disps=None, centroid_sel_strat='RANDOM', return_color=False):
+    def forward(self, images, patches_per_image=80, disps=None, centroid_sel_strat='RANDOM', return_color=True):
         """ extract patches from input images """
         fmap = self.fnet(images) / 4.0
         imap = self.inet(images) / 4.0
 
         b, n, c, h, w = fmap.shape
         P = self.patch_size
+
 
         # bias patch selection towards regions with high gradient
         if centroid_sel_strat == 'GRADIENT_BIAS':
@@ -130,14 +131,20 @@ class Patchifier(nn.Module):
             y = torch.gather(y, 1, ix[:, -patches_per_image:])
 
         elif centroid_sel_strat == 'RANDOM':
-            x = torch.randint(1, w-1, size=[n, patches_per_image], device="cuda")
-            y = torch.randint(1, h-1, size=[n, patches_per_image], device="cuda")
+            # x = torch.randint(1, w-1, size=[n, patches_per_image], device="cuda")
+            # y = torch.randint(1, h-1, size=[n, patches_per_image], device="cuda")
+            #modified to prevent dynamic values with h/w interering with onnx conversion
+            x = torch.rand(n, patches_per_image, device="cuda") * (w - 2) + 1  # in [1, w-1)
+            x = x.floor().long()
+            y = torch.rand(n, patches_per_image, device="cuda") * (h - 2) + 1  # in [1, w-1)
+            y = y.floor().long()
+            
 
         else:
             raise NotImplementedError(f"Patch centroid selection not implemented: {centroid_sel_strat}")
 
         coords = torch.stack([x, y], dim=-1).float()
-        # gets feature and contect maps in latent space at latent resolution for image [0]
+        # gets feature and context maps in latent space at latent resolution for image batch 0
         imap = altcorr.patchify(imap[0], coords, 0).view(b, -1, DIM, 1, 1)
         gmap = altcorr.patchify(fmap[0], coords, P//2).view(b, -1, 128, P, P)
 
@@ -146,9 +153,10 @@ class Patchifier(nn.Module):
             clr = altcorr.patchify(images[0], 4*(coords + 0.5), 0).view(b, -1, 3)
 
         if disps is None:
-            disps = torch.ones(b, n, h, w, device="cuda")
+            
+            disps = torch.ones(b, n, h, w, device=fmap.device)
 
-        grid, _ = coords_grid_with_index(disps, device=fmap.device)
+        grid, _ = coords_grid_with_index(disps, device=disps.device)
         patches = altcorr.patchify(grid[0], coords, P//2).view(b, -1, 3, P, P)
 
         index = torch.arange(n, device="cuda").view(n, 1)
@@ -233,6 +241,10 @@ class VONet(nn.Module):
     @autocast(enabled=False)
     def forward(self, images, poses, disps, intrinsics, M=1024, STEPS=12, P=1, structure_only=False, rescale=False):
         """ Estimates SE3 or Sim3 between pair of frames """
+        print(f'Poses shape {poses.shape}')
+        print(f'Disps shape {disps.shape}')
+        print(f'intrinsics shape {intrinsics.shape}')
+
 
         images = 2 * (images / 255.0) - 0.5
         intrinsics = intrinsics / 4.0

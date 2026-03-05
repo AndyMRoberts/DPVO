@@ -42,7 +42,7 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_offline_onnx_static_int8 \
+    --test_run_name tartan_mono_onnx_patchify \
     --weights dpvo.pth \
     --split test \
     --power_log \
@@ -51,9 +51,11 @@ python launch_evaluation.py \
     --save_trajectory \
     --plot \
     --backend onnx \
-    --onnx_dir andy/onnx_static_int8
+    --onnx_dir andy/onnx \
+    --onnx_type patchify
 ```
 
+running pure pytorch version ( so far only patchify, next will be update operator too)
 ```bash
 python launch_evaluation.py \
     --test_run_name tartan_mono_offline_pytorch_only \

@@ -152,6 +152,7 @@ def main():
                         help="Directory containing fnet.onnx and inet.onnx (used when --backend onnx)")
     parser.add_argument("--file_to_run", type=str, default=None, help="the evaluation file to be launched")
     parser.add_argument("--description", type=str, default="No desription provided")
+    parser.add_argument("--onnx_type", type=str, default="patchify")
     
     args = parser.parse_args()
 
@@ -190,6 +191,7 @@ def main():
         "backend_thresh": args.backend_thresh,
         "backend": args.backend,
         "onnx_dir": args.onnx_dir,
+        "onnx_type": args.onnx_type,
         "plot": args.plot,
         "save_trajectory": args.save_trajectory,
         "viz": args.viz,
@@ -222,6 +224,7 @@ def main():
         "--backend_thresh", str(args.backend_thresh),
         "--backend", args.backend,
         "--onnx_dir", args.onnx_dir,
+        "--onnx_type", args.onnx_type,
         "--id", str(args.id),
     ]
     if args.datapath:

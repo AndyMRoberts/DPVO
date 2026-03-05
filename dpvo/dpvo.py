@@ -11,6 +11,9 @@ from .net import VONet
 from .patchgraph import PatchGraph
 from .utils import *
 
+import os
+
+
 mp.set_start_method('spawn', True)
 
 
@@ -20,11 +23,12 @@ Id = SE3.Identity(1, device="cuda")
 
 class DPVO:
 
-    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None):
+    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type='patchify'):
         self.cfg = cfg
         self._onnx_fnet = None
         self._onnx_inet = None
-        self.load_weights(network, onnx_dir=onnx_dir)
+        self._onnx_patchify = None
+        self.load_weights(network, onnx_dir=onnx_dir, onnx_type=onnx_type)
         self.is_initialized = False
         self.enable_timing = False
         torch.set_num_threads(2)
@@ -90,7 +94,7 @@ class DPVO:
             self.cfg.CLASSIC_LOOP_CLOSURE = False
             print(f"WARNING: {e}")
 
-    def load_weights(self, network, onnx_dir=None):
+    def load_weights(self, network, onnx_dir=None, onnx_type='patchify'):
         # load network from checkpoint file
         if isinstance(network, str):
             from collections import OrderedDict
@@ -116,9 +120,51 @@ class DPVO:
 
         # optional ONNX encoders (fnet, inet) for hybrid PyTorch+ONNX
         if onnx_dir:
-            self._load_onnx_encoders(onnx_dir)
+            if onnx_type == 'features':
+                self._load_onnx_encoders_features(onnx_dir)
+            elif onnx_type == 'patchify':
+                self._load_onnx_encoders_patchify(onnx_dir)
 
-    def _load_onnx_encoders(self, onnx_dir):
+    def _load_onnx_encoders_patchify(self, onnx_dir):
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
+        patchify_path = os.path.join(onnx_dir, "patchify.onnx")
+        if not os.path.isfile(patchify_path):
+            raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
+        # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
+        def _model_uses_conv_integer(path):
+            try:
+                import onnx
+                m = onnx.load(path)
+                for node in m.graph.node:
+                    if node.op_type == "ConvInteger":
+                        return True
+                return False
+            except Exception:
+                return False
+        onnx_dir_str = os.path.normpath(str(onnx_dir))
+        is_quantized = (
+            _model_uses_conv_integer(patchify_path)
+            or "int8" in onnx_dir_str
+            or "quant" in onnx_dir_str.lower()
+        )
+        # Quantized models use ConvInteger: CUDA EP doesn't implement it; CPU EP in onnxruntime-gpu
+        # may not either. TensorRT EP can run INT8 on GPU. Prefer TensorRT > CUDA > CPU for quantized.
+        if is_quantized:
+            available = ort.get_available_providers()
+            if "TensorrtExecutionProvider" in available:
+                print("Tensorrt available")
+                providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
+                providers = ["CPUExecutionProvider"]
+        else:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self._onnx_patchify = ort.InferenceSession(patchify_path, providers=providers)
+    
+    def _load_onnx_encoders_features(self, onnx_dir):
         import os
         try:
             import onnxruntime as ort
@@ -437,6 +483,7 @@ class DPVO:
             self.viewer.update_image(image.contiguous())
 
         image = 2 * (image[None,None] / 255.0) - 0.5
+        # stop h/w being dynamic in pathcify to help with onnx export
 
         with autocast(enabled=self.cfg.MIXED_PRECISION):
             if self._onnx_fnet is not None and self._onnx_inet is not None:
@@ -448,13 +495,25 @@ class DPVO:
                     fmap, imap, image,
                     patches_per_image=self.cfg.PATCHES_PER_FRAME,
                     centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
-                    return_color=True)
+                    return_color=True
+                    )
+            elif self._onnx_patchify is not None:
+                feed = {"images": image.cpu().numpy().astype(np.float32),
+                "patches_per_image": np.array(self.cfg.PATCHES_PER_FRAME, dtype=np.int64)}
+                fmap, gmap, imap, patches, _, clr = \
+                    self._onnx_patchify.run(output_names=None, input_feed=feed, run_options=None)
+                fmap = torch.from_numpy(fmap).to('cuda')
+                gmap = torch.from_numpy(gmap).to('cuda')
+                imap = torch.from_numpy(imap).to('cuda')
+                patches = torch.from_numpy(patches).to('cuda')
+                clr = torch.from_numpy(clr).to('cuda')
             else:
                 fmap, gmap, imap, patches, _, clr = \
                     self.network.patchify(image,
                         patches_per_image=self.cfg.PATCHES_PER_FRAME,
                         centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
-                        return_color=True)
+                        return_color=True
+                        )
 
         ### update state attributes ###
         self.tlist.append(tstamp)

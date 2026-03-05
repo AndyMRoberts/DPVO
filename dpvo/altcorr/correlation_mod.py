@@ -62,6 +62,7 @@ def patchify_forward_pytorch(net, coords, radius):
 }
     """
     R = radius
+    coords = coords.to(net.device)
     
     B = coords.shape[0]
     M = coords.shape[1]
@@ -110,5 +111,7 @@ def patchify_forward_pytorch(net, coords, radius):
       patches,
       torch.zeros_like(patches),
     )
+
+
 
     return patches
