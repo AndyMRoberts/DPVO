@@ -55,6 +55,25 @@ python launch_evaluation.py \
     --onnx_type patchify
 ```
 
+
+with George's optimised models
+
+```bash
+python launch_evaluation.py \
+    --test_run_name tartan_mono_onnx_george_1 \
+    --description "first run of george's optmised feature models" \
+    --weights dpvo.pth \
+    --split test \
+    --power_log \
+    --viz \
+    --show_img \
+    --save_trajectory \
+    --plot \
+    --backend onnx \
+    --onnx_dir andy/onnx_george \
+    --onnx_type features
+```
+
 running pure pytorch version ( so far only patchify, next will be update operator too)
 ```bash
 python launch_evaluation.py \

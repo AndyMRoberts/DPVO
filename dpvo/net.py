@@ -241,9 +241,6 @@ class VONet(nn.Module):
     @autocast(enabled=False)
     def forward(self, images, poses, disps, intrinsics, M=1024, STEPS=12, P=1, structure_only=False, rescale=False):
         """ Estimates SE3 or Sim3 between pair of frames """
-        print(f'Poses shape {poses.shape}')
-        print(f'Disps shape {disps.shape}')
-        print(f'intrinsics shape {intrinsics.shape}')
 
 
         images = 2 * (images / 255.0) - 0.5

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import torch_scatter
+import onnx_mods
 
 class LayerNorm1D(nn.Module):
     def __init__(self, dim):
@@ -39,8 +40,13 @@ class SoftAgg(nn.Module):
 
     def forward(self, x, ix):
         _, jx = torch.unique(ix, return_inverse=True)
-        w = torch_scatter.scatter_softmax(self.g(x), jx, dim=1)
-        y = torch_scatter.scatter_sum(self.f(x) * w, jx, dim=1)
+        # converted to normal pytorch from torch_scatter to allow onnx export
+        try:
+            w = torch_scatter.scatter_softmax(self.g(x), jx, dim=1)
+            y = torch_scatter.scatter_sum(self.f(x) * w, jx, dim=1)
+        except:
+            w = onnx_mods.torch_scatter_softmax(self.g(x), jx, dim=1)
+            y = onnx_mods.torch_scatter_sum(self.f(x) * w, jx, dim=1)
 
         if self.expand:
             return self.h(y)[:,jx]
@@ -58,8 +64,13 @@ class SoftAggBasic(nn.Module):
 
     def forward(self, x, ix):
         _, jx = torch.unique(ix, return_inverse=True)
-        w = torch_scatter.scatter_softmax(self.g(x), jx, dim=1)
-        y = torch_scatter.scatter_sum(self.f(x) * w, jx, dim=1)
+        # converted to normal pytorch from torch_scatter to allow onnx export
+        try:
+            w = torch_scatter.scatter_softmax(self.g(x), jx, dim=1)
+            y = torch_scatter.scatter_sum(self.f(x) * w, jx, dim=1)
+        except:
+            w = onnx_mods.torch_scatter_softmax(self.g(x), jx, dim=1)
+            y = onnx_mods.torch_scatter_sum(self.f(x) * w, jx, dim=1)
 
         if self.expand:
             return self.h(y)[:,jx]
