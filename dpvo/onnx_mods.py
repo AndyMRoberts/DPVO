@@ -16,14 +16,27 @@ def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
     return src
 
 
-def torch_scatter_max(src, index, dim, dim_size):
+def torch_scatter_max(src, index, dim, dim_size=None):
     """
     To replace the torch_scatter implementation
     """
-    return src.scatter_reduce_(dim ,index, src, reduce="amax")
+    index = broadcast(index, src, dim)
 
+    size = list(src.size())
+    if dim_size is not None:
+        size[dim] = dim_size
+    elif index.numel() == 0:
+        size[dim] = 0
+    else:
+        size[dim] = int(index.max()) + 1
+    out = torch.zeros(size, dtype=src.dtype, device=src.device)
 
-def torch_scatter_sum(src, index, dim, dim_size):
+    out = out.scatter_reduce_(dim ,index, src, reduce="amax", include_self=False)
+    out = broadcast(out, index, dim)
+    
+    return out
+
+def torch_scatter_sum(src, index, dim, dim_size=None):
     """
     To replace the torch_scatter implementation:
     class ScatterSum : public torch::autograd::Function<ScatterSum> {
@@ -44,12 +57,27 @@ def torch_scatter_sum(src, index, dim, dim_size):
         return {out};
         }
     """
+    index = broadcast(index, src, dim)
 
-    return src.scatter_reduce_(dim, index, src, reduce="sum")
+    size = list(src.size())
+    if dim_size is not None:
+        size[dim] = dim_size
+    elif index.numel() == 0:
+        size[dim] = 0
+    else:
+        size[dim] = int(index.max()) + 1
+
+    out = torch.zeros(size, dtype=src.dtype, device=src.device)
+
+    out = out.scatter_reduce_(dim, index, src, reduce="sum", include_self=False)
+    out = broadcast(out, index, dim)
+    return out
 
 
 
-def torch_scatter_softmax(src, index, dim=1, dim_size=None):
+
+
+def torch_scatter_softmax(src, index, dim=-1, dim_size=None):
     """
     --------
     To replace the torch_scatter implementation
@@ -76,6 +104,10 @@ def torch_scatter_softmax(src, index, dim=1, dim_size=None):
 
     return recentered_scores_exp.div(normalizing_constants)
     """
+
+    if dim_size is None:
+        dim_size = int(index.max()) + 1
+
     if not torch.is_floating_point(src):
         raise ValueError('`scatter_softmax` can only be computed over tensors '
                          'with floating point data types.')
@@ -84,6 +116,7 @@ def torch_scatter_softmax(src, index, dim=1, dim_size=None):
 
     max_value_per_index = torch_scatter_max(
         src, index, dim=dim, dim_size=dim_size)[0]
+
     max_per_src_element = max_value_per_index.gather(dim, index)
 
     recentered_scores = src - max_per_src_element
