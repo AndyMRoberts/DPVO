@@ -18,23 +18,26 @@ def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
 
 def torch_scatter_max(src, index, dim, dim_size=None):
     """
-    To replace the torch_scatter implementation
+    To replace the torch_scatter implementation.
+    For the scatter_softmax use case we want an output with the SAME SHAPE
+    as src, where entries that share the same index along `dim` contain the
+    group's maximum. The caller is responsible for broadcasting `index`
+    to match src's shape.
     """
+    # Make dim non-negative
+    if dim < 0:
+        dim = src.dim() + dim
+
+    # Ensure index has same shape/rank as src along dim
     index = broadcast(index, src, dim)
 
-    size = list(src.size())
-    if dim_size is not None:
-        size[dim] = dim_size
-    elif index.numel() == 0:
-        size[dim] = 0
-    else:
-        size[dim] = int(index.max()) + 1
-    out = torch.zeros(size, dtype=src.dtype, device=src.device)
+    # Start from the identity for max (-inf) and ignore the existing values via
+    # include_self=False so we only reduce over `src`.
+    out = torch.full_like(src, float("-inf"))
+    out = out.scatter_reduce_(dim, index, src, reduce="amax", include_self=True)
 
-    out = out.scatter_reduce_(dim ,index, src, reduce="amax", include_self=False)
-    out = broadcast(out, index, dim)
-    
-    return out
+    # Return a dummy second value for compatibility with torch_scatter API.
+    return out, index
 
 def torch_scatter_sum(src, index, dim, dim_size=None):
     """
@@ -57,20 +60,16 @@ def torch_scatter_sum(src, index, dim, dim_size=None):
         return {out};
         }
     """
+    # Make dim non-negative
+    if dim < 0:
+        dim = src.dim() + dim
+
+    # Same semantics as torch_scatter_max above: output has the SAME SHAPE as
+    # src. Allow index to be 1-D or already broadcast; normalize to src shape.
     index = broadcast(index, src, dim)
 
-    size = list(src.size())
-    if dim_size is not None:
-        size[dim] = dim_size
-    elif index.numel() == 0:
-        size[dim] = 0
-    else:
-        size[dim] = int(index.max()) + 1
-
-    out = torch.zeros(size, dtype=src.dtype, device=src.device)
-
-    out = out.scatter_reduce_(dim, index, src, reduce="sum", include_self=False)
-    out = broadcast(out, index, dim)
+    out = torch.zeros_like(src)
+    out = out.scatter_reduce_(dim, index, src, reduce="sum", include_self=True)
     return out
 
 
@@ -104,9 +103,6 @@ def torch_scatter_softmax(src, index, dim=-1, dim_size=None):
 
     return recentered_scores_exp.div(normalizing_constants)
     """
-
-    if dim_size is None:
-        dim_size = int(index.max()) + 1
 
     if not torch.is_floating_point(src):
         raise ValueError('`scatter_softmax` can only be computed over tensors '

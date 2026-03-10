@@ -39,10 +39,11 @@ python evaluate_tartan_andy.py \
 ```
 
 with onnx
+# set onnx_type to 'features', 'patchify', or 'all' so far
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_patchify \
+    --test_run_name tartan_mono_onnx_all \
     --weights dpvo.pth \
     --split test \
     --power_log \
@@ -52,7 +53,7 @@ python launch_evaluation.py \
     --plot \
     --backend onnx \
     --onnx_dir andy/onnx \
-    --onnx_type patchify
+    --onnx_type all
 ```
 
 

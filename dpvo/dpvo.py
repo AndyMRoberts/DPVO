@@ -28,6 +28,7 @@ class DPVO:
         self._onnx_fnet = None
         self._onnx_inet = None
         self._onnx_patchify = None
+        self._onnx_update = None
         self.load_weights(network, onnx_dir=onnx_dir, onnx_type=onnx_type)
         self.is_initialized = False
         self.enable_timing = False
@@ -124,6 +125,50 @@ class DPVO:
                 self._load_onnx_encoders_features(onnx_dir)
             elif onnx_type == 'patchify':
                 self._load_onnx_encoders_patchify(onnx_dir)
+            elif onnx_type == 'all':
+                self._load_onnx_encoders_patchify(onnx_dir)
+                self._load_onnx_encoders_update(onnx_dir)
+
+    def _load_onnx_encoders_update(self, onnx_dir):
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
+        update_path = os.path.join(onnx_dir, "update.onnx")
+
+        if not os.path.isfile(update_path):
+            raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
+        # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
+        def _model_uses_conv_integer(path):
+            try:
+                import onnx
+                m = onnx.load(path)
+                for node in m.graph.node:
+                    if node.op_type == "ConvInteger":
+                        return True
+                return False
+            except Exception:
+                return False
+        onnx_dir_str = os.path.normpath(str(onnx_dir))
+        is_quantized = (
+            _model_uses_conv_integer(update_path)
+            or "int8" in onnx_dir_str
+            or "quant" in onnx_dir_str.lower()
+        )
+        # Quantized models use ConvInteger: CUDA EP doesn't implement it; CPU EP in onnxruntime-gpu
+        # may not either. TensorRT EP can run INT8 on GPU. Prefer TensorRT > CUDA > CPU for quantized.
+        if is_quantized:
+            available = ort.get_available_providers()
+            if "TensorrtExecutionProvider" in available:
+                print("Tensorrt available")
+                providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
+                providers = ["CPUExecutionProvider"]
+        else:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self._onnx_update = ort.InferenceSession(update_path, providers=providers)
+    
 
     def _load_onnx_encoders_patchify(self, onnx_dir):
         try:
@@ -428,8 +473,25 @@ class DPVO:
             with autocast(enabled=True):
                 corr = self.corr(coords)
                 ctx = self.imap[:, self.pg.kk % (self.M * self.pmem)]
-                self.pg.net, (delta, weight, _) = \
-                    self.network.update(self.pg.net, ctx, corr, None, self.pg.ii, self.pg.jj, self.pg.kk)
+                if self._onnx_update is not None:
+                    feed = {
+                        'net_in': self.pg.net.cpu().numpy().astype(np.float32),
+                        'inp': ctx.cpu().numpy().astype(np.float32),
+                        'corr': corr.cpu().numpy().astype(np.float32),
+                        'flow': None,
+                        'ii': self.pg.ii.cpu().numpy().astype(np.int64),
+                        'jj': self.pg.jj.cpu().numpy().astype(np.int64),
+                        'kk': self.pg.kk.cpu().numpy().astype(np.int64),
+                        }
+                    self.pg.net, (delta, weight, _) = \
+                        self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
+                    # convert back from numpy to torch tensors
+                    self.pg.net = torch.from_numpy(self.pg.net).to('cuda')
+                    delta = torch.from_numpy(delta).to('cuda')
+                    weight = torch.from_numpy(weight).to('cuda')
+                else: 
+                    self.pg.net, (delta, weight, _) = \
+                        self.network.update(self.pg.net, ctx, corr, None, self.pg.ii, self.pg.jj, self.pg.kk)
 
             lmbda = torch.as_tensor([1e-4], device="cuda")
             weight = weight.float()
