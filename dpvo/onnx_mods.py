@@ -34,7 +34,7 @@ def torch_scatter_max(src, index, dim, dim_size=None):
     # Start from the identity for max (-inf) and ignore the existing values via
     # include_self=False so we only reduce over `src`.
     out = torch.full_like(src, float("-inf"))
-    out = out.scatter_reduce_(dim, index, src, reduce="amax", include_self=True)
+    out = out.scatter_reduce_(dim, index, src, reduce="amax")
 
     # Return a dummy second value for compatibility with torch_scatter API.
     return out, index
@@ -69,7 +69,7 @@ def torch_scatter_sum(src, index, dim, dim_size=None):
     index = broadcast(index, src, dim)
 
     out = torch.zeros_like(src)
-    out = out.scatter_reduce_(dim, index, src, reduce="sum", include_self=True)
+    out = out.scatter_reduce_(dim, index, src, reduce="sum")
     return out
 
 

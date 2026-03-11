@@ -483,7 +483,7 @@ class DPVO:
                         'jj': self.pg.jj.cpu().numpy().astype(np.int64),
                         'kk': self.pg.kk.cpu().numpy().astype(np.int64),
                         }
-                    self.pg.net, (delta, weight, _) = \
+                    self.pg.net, delta, weight = \
                         self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
                     # convert back from numpy to torch tensors
                     self.pg.net = torch.from_numpy(self.pg.net).to('cuda')

@@ -41,8 +41,8 @@ class Update(nn.Module):
         
         self.norm = nn.LayerNorm(DIM, eps=1e-3)
 
-        self.agg_kk = SoftAgg(DIM)
-        self.agg_ij = SoftAgg(DIM)
+        self.agg_kk = SoftAgg(DIM) # patch to patch information sharing
+        self.agg_ij = SoftAgg(DIM) # frame to frame information sharing
 
         self.gru = nn.Sequential(
             nn.LayerNorm(DIM, eps=1e-3),
@@ -85,8 +85,8 @@ class Update(nn.Module):
         net = net + self.c1(mask_ix * net[:,ix])
         net = net + self.c2(mask_jx * net[:,jx])
 
-        net = net + self.agg_kk(net, kk)
-        net = net + self.agg_ij(net, ii*12345 + jj)
+        net = net + self.agg_kk(net, kk) # patch to patch information sharing
+        net = net + self.agg_ij(net, ii*12345 + jj) # frame to frame information sharing
 
         net = self.gru(net)
 
