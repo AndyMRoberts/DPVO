@@ -132,3 +132,10 @@ python andy/onnx_quantize.py --input-dir andy/onnx --weight-type fp16 --suffix f
 
 - **Int8 dynamic** (`andy/onnx_dynamic_int8`): The code tries TensorRT first for quantized models; TensorRT will reject these due to `DynamicQuantizeLinear`. Fallback is CPU (if ConvInteger is implemented).
 - If you need int8 on GPU and TensorRT is not available or you hit ConvInteger issues: use **FP16** (`--weight-type fp16`, `--onnx_dir andy/onnx_fp16`), which runs on CUDA.
+
+
+# Full Onnx Runnign MOdifications:
+Modifications to allow update onnx export
+- blocks.py> SoftAggBasic/ SoftAgg > lines 61:62 - converted from torch_scatter to onnx_mods.py versions
+- dpvo > update() - now pads negligible values to match a fixed onnx model size. 
+- dpvo > load_weights() - modified to not load the VONet weights anymore and only uses onnx weights

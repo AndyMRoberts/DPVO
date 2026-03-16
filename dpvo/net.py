@@ -24,6 +24,8 @@ autocast = partial(torch.amp.autocast, "cuda")
 import matplotlib.pyplot as plt
 
 DIM = 384
+P = 3
+RES = 4
 
 class Update(nn.Module):
     def __init__(self, p):
@@ -230,12 +232,12 @@ class CorrBlock:
 class VONet(nn.Module):
     def __init__(self, use_viewer=False):
         super(VONet, self).__init__()
-        self.P = 3
+        self.P = P
         self.patchify = Patchifier(self.P)
         self.update = Update(self.P)
 
         self.DIM = DIM
-        self.RES = 4
+        self.RES = RES
 
 
     @autocast(enabled=False)
