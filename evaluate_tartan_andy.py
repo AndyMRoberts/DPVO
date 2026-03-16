@@ -60,6 +60,11 @@ def run(imagedir, cfg, network, viz=False, show_img=False, onnx_dir=None, onnx_t
         with Timer("SLAM", enabled=False):
             slam(t, image, intrinsics)
 
+    # data needed to help make onnx export    
+    with open("max_edges_count.txt", "w") as f:
+        for item in slam.max_edges_count:
+            f.write(str(item) + "\n")
+
     return slam.terminate()
 
 

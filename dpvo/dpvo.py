@@ -25,14 +25,18 @@ class DPVO:
 
     def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type='patchify'):
         self.cfg = cfg
-        self._onnx_fnet = None
-        self._onnx_inet = None
-        self._onnx_patchify = None
-        self._onnx_update = None
         self.load_weights(network, onnx_dir=onnx_dir, onnx_type=onnx_type)
         self.is_initialized = False
         self.enable_timing = False
         torch.set_num_threads(2)
+
+        # onnx additions
+        self._onnx_fnet = None
+        self._onnx_inet = None
+        self._onnx_patchify = None
+        self._onnx_update = None
+        self.max_edges_count = []
+        self.edges_padded_value = 50000 # used to avoid dynamic axes issue with onnx export
 
         self.M = self.cfg.PATCHES_PER_FRAME
         self.N = self.cfg.BUFFER_SIZE
@@ -97,19 +101,25 @@ class DPVO:
 
     def load_weights(self, network, onnx_dir=None, onnx_type='patchify'):
         # load network from checkpoint file
-        if isinstance(network, str):
-            from collections import OrderedDict
-            state_dict = torch.load(network, weights_only=True)
-            new_state_dict = OrderedDict()
-            for k, v in state_dict.items():
-                if "update.lmbda" not in k:
-                    new_state_dict[k.replace('module.', '')] = v
-
-            self.network = VONet()
-            self.network.load_state_dict(new_state_dict)
-
+        if onnx_type == 'all':
+            if isinstance(network, str):
+                self.network = VONet() # load without weights
+            else:
+                self.network = network
         else:
-            self.network = network
+            if isinstance(network, str):
+                from collections import OrderedDict
+                state_dict = torch.load(network, weights_only=True)
+                new_state_dict = OrderedDict()
+                for k, v in state_dict.items():
+                    if "update.lmbda" not in k:
+                        new_state_dict[k.replace('module.', '')] = v
+
+                self.network = VONet()
+                self.network.load_state_dict(new_state_dict)
+
+            else:
+                self.network = network
 
         # steal network attributes
         self.DIM = self.network.DIM
@@ -126,6 +136,7 @@ class DPVO:
             elif onnx_type == 'patchify':
                 self._load_onnx_encoders_patchify(onnx_dir)
             elif onnx_type == 'all':
+                self.use_edges_padding = True
                 self._load_onnx_encoders_patchify(onnx_dir)
                 self._load_onnx_encoders_update(onnx_dir)
 
@@ -470,18 +481,50 @@ class DPVO:
         with Timer("other", enabled=self.enable_timing):
             coords = self.reproject()
 
+            ### record max e dimensions for use in onnx exporting ###
+            self.max_edges_count.append(int(self.pg.net.shape[1]))
+
+
             with autocast(enabled=True):
                 corr = self.corr(coords)
                 ctx = self.imap[:, self.pg.kk % (self.M * self.pmem)]
+
+                if self.use_edges_padding:
+                    B, E_real, D =self.pg.net.shape
+                    _, _, Cc = corr.shape
+                    pad_value = self.edges_padded_value - E_real
+                    
+                    if pad_value <= 0:
+                        raise ValueError(f"Number of edges exceeds the padding \
+                            size for onnx. Onnx must be re-exported with \
+                            an increased padding value by {pad_value}.")
+
+                    # create dummy pad variables
+                    net_pad = torch.zeros(B, pad_value, D, device= self.pg.net.device)
+                    ctx_pad = torch.zeros_like(net_pad, device=ctx.device)
+                    corr_pad = torch.zeros(B, pad_value, Cc, device=corr.device)
+                    ii_pad = self.pg.ii[-1].repeat(pad_value) # repeats last frame
+                    jj_pad = self.pg.jj[-1].repeat(pad_value) # repeats last frame
+                    # generates brand new, unconnected edges that should not effect the algorithm
+                    kk_pad = self.pg.kk.max() + torch.arange(1, pad_value + 1, device=self.pg.kk.device, dtype=self.pg.kk.dtype)
+                    
+                    # concatenate pad variables onto real values to create a valid padded parameter
+                    net_padded = torch.cat([self.pg.net, net_pad], dim=1)
+                    ctx_padded = torch.cat([ctx, ctx_pad], dim=1)
+                    corr_padded = torch.cat([corr, corr_pad], dim=1)
+                    ii_padded = torch.cat([self.pg.ii, ii_pad], dim=0)
+                    jj_padded = torch.cat([self.pg.jj, jj_pad], dim=0)
+                    kk_padded = torch.cat([self.pg.kk, kk_pad], dim=0)
+
                 if self._onnx_update is not None:
                     feed = {
-                        'net_in': self.pg.net.cpu().numpy().astype(np.float32),
-                        'inp': ctx.cpu().numpy().astype(np.float32),
-                        'corr': corr.cpu().numpy().astype(np.float32),
+                        'net_in': net_padded.cpu().numpy().astype(np.float32),
+                        'inp': ctx_padded.cpu().numpy().astype(np.float32),
+                        'corr': corr_padded.cpu().numpy().astype(np.float32),
                         'flow': None,
-                        'ii': self.pg.ii.cpu().numpy().astype(np.int64),
-                        'jj': self.pg.jj.cpu().numpy().astype(np.int64),
-                        'kk': self.pg.kk.cpu().numpy().astype(np.int64),
+                        'ii': ii_padded.cpu().numpy().astype(np.int64),
+                        'jj': jj_padded.cpu().numpy().astype(np.int64),
+                        'kk': kk_padded.cpu().numpy().astype(np.int64),
                         }
                     self.pg.net, delta, weight = \
                         self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
@@ -576,6 +619,8 @@ class DPVO:
                         centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
                         return_color=True
                         )
+
+
 
         ### update state attributes ###
         self.tlist.append(tstamp)

@@ -5,6 +5,17 @@ To record baseline power readings 1 minute
 python andy/manual_test.py
 ```
 
+run normal pytorch version
+```bash
+python launch_evaluation.py \
+    --test_run_name tartan_pytorch_data_collecting \
+    --description "collecting data for max edges count, to be used in onnx exporting" \
+    --weights dpvo.pth \
+    --split test \
+    --power_log 
+
+
+```
 baseline onnx/pytorch features only models running
 ```bash
 python launch_evaluation.py \
@@ -43,7 +54,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_all \
+    --test_run_name tartan_mono_onnx_all_50k \
+    --description "running patchify and update with padding set to 50k, removed loading weights from original model" \
     --weights dpvo.pth \
     --split test \
     --power_log \
