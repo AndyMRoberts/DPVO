@@ -14,7 +14,7 @@ from .utils import *
 
 import os
 
-verbose = False
+verbose = True
 
 mp.set_start_method('spawn', True)
 
@@ -31,6 +31,7 @@ class DPVO:
         self._onnx_inet = None
         self._onnx_patchify = None
         self._onnx_update = None
+        self.use_edges_padding = False
         self.max_edges_count = []
         self.edges_padded_value = 100000 # used to avoid dynamic axes issue with onnx export
 
@@ -492,7 +493,7 @@ class DPVO:
             if verbose: print(f'E_real = {E_real}')
             pad_value = self.edges_padded_value - E_real
             
-            if pad_value <= 0:
+            if pad_value < 0:
                 raise ValueError(f"Number of edges exceeds the padding \
                     size for onnx. Onnx must be re-exported with \
                     an increased padding value by {pad_value}.")
@@ -515,7 +516,7 @@ class DPVO:
             kk_padded = torch.cat([kk, kk_pad], dim=0)
 
         if self._onnx_update is not None:
-            if verbose: print(f'Running onnx update model')
+            if verbose: print(f'Running onnx update')
             feed = {
                 'net_in': net_padded.cpu().numpy().astype(np.float32),
                 'inp': ctx_padded.cpu().numpy().astype(np.float32),
@@ -525,18 +526,18 @@ class DPVO:
                 'jj': jj_padded.cpu().numpy().astype(np.int64),
                 'kk': kk_padded.cpu().numpy().astype(np.int64),
                 }
-            self.pg.net, delta, weight = \
+            net, delta, weight = \
                 self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
             # convert back from numpy to torch tensors
-            self.pg.net = torch.from_numpy(self.pg.net).to('cuda')
-            delta = torch.from_numpy(delta).to('cuda')
-            weight = torch.from_numpy(weight).to('cuda')
+            net = torch.from_numpy(net).to('cuda')
+            delta = torch.from_numpy(delta[:,:E_real]).to('cuda')
+            weight = torch.from_numpy(weight[:,:E_real]).to('cuda')
         else: 
-            if verbose: print(f'Running pytorch update model')
-            self.pg.net, (delta, weight, _) = \
+            if verbose: print(f'Running pytorch update')
+            net, (delta, weight, _) = \
                 self.network.update(net, ctx, corr, None, ii, jj, kk)
         
-        return self.pg.net, delta, weight
+        return net, delta, weight
 
     def update(self):
         with Timer("other", enabled=self.enable_timing):
@@ -548,7 +549,7 @@ class DPVO:
             with autocast(enabled=True):
                 corr = self.corr(coords)
                 ctx = self.imap[:, self.pg.kk % (self.M * self.pmem)]
-                delta, weight = self.update_inner(self.pg.net, corr, ctx, self.pg.ii, self.pg.jj, self.pg.kk)
+                self.pg.net, delta, weight = self.update_inner(self.pg.net, corr, ctx, self.pg.ii, self.pg.jj, self.pg.kk)
 
             lmbda = torch.as_tensor([1e-4], device="cuda")
             weight = weight.float()
@@ -606,7 +607,7 @@ class DPVO:
 
         with autocast(enabled=self.cfg.MIXED_PRECISION):
             if self._onnx_fnet is not None and self._onnx_inet is not None:
-                if verbose: print(f'Running features only onnx')
+                if verbose: print(f'Running onnx features only')
                 # Hybrid: run fnet/inet with ONNX, rest with PyTorch
                 feed = {"images": image.cpu().numpy().astype(np.float32)}
                 fmap = torch.from_numpy(self._onnx_fnet.run(None, feed)[0]).cuda().to(image.dtype)
@@ -618,7 +619,7 @@ class DPVO:
                     return_color=True
                     )
             elif self._onnx_patchify is not None:
-                if verbose: print(f'Running patchify onnx')
+                if verbose: print(f'Running onnx patchify')
                 feed = {"images": image.cpu().numpy().astype(np.float32),
                 "patches_per_image": np.array(self.cfg.PATCHES_PER_FRAME, dtype=np.int64)}
                 fmap, gmap, imap, patches, _, clr = \

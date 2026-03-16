@@ -54,8 +54,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_all_50k \
-    --description "running patchify and update with padding set to 50k, removed loading weights from original model" \
+    --test_run_name tartan_mono_onnx_all_100k \
+    --description "running 100k again to confirm slowdown with all" \
     --weights dpvo.pth \
     --split test \
     --power_log \
