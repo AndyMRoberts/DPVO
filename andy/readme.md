@@ -54,8 +54,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_all_100k \
-    --description "running 100k again to confirm slowdown with all" \
+    --test_run_name tartan_mono_onnx_logging_values \
+    --description "Set up logs for the update inputs using pandas" \
     --weights dpvo.pth \
     --split test \
     --power_log \

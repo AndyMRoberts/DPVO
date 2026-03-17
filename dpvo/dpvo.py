@@ -18,11 +18,15 @@ try:
 except ImportError:
     raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
 
+import pandas as pd # temporary, for logging
+
 so = ort.SessionOptions()
 so.log_severity_level = 2  # 0 = verbose
 
 
-verbose = True
+verbose = False
+logging = True
+
 
 mp.set_start_method('spawn', True)
 
@@ -41,7 +45,10 @@ class DPVO:
         self._onnx_update = None
         self.use_edges_padding = False
         self.max_edges_count = []
-        self.edges_padded_value = 100000 # used to avoid dynamic axes issue with onnx export
+        self.edges_padded_value = 50000 # used to avoid dynamic axes issue with onnx export
+        self.logging = False
+        self.log_start_buffer = 100
+        self.log_count = 0
 
         self.cfg = cfg
         self.load_weights(network, onnx_dir=onnx_dir, onnx_type=onnx_type)
@@ -155,10 +162,6 @@ class DPVO:
         if verbose: print(f'Loading onnx update model')
         update_path = os.path.join(onnx_dir, "update.onnx")
 
-        net_out = torch.empty((B, E, C), device="cuda")
-        delta_out = torch.empty((B, E), device="cuda")
-        weight_out = torch.empty((B, E), device="cuda")
-
         if not os.path.isfile(update_path):
             raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
         # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
@@ -189,11 +192,9 @@ class DPVO:
                 # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
                 providers = ["CPUExecutionProvider"]
         else:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            # providers = ["CUDAExecutionProvider"]
+            # providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = ["CUDAExecutionProvider"]
         self._onnx_update = ort.InferenceSession(update_path, sess_options=so, providers=providers)
-        self.update_io_binding = self._onnx_update.io_binding()
-        self._onnx_update.run_with_iobinding(self.update_io_binding)
         if verbose: print(f'Onnx Update Loaded: {self._onnx_update}')
     
 
@@ -230,8 +231,8 @@ class DPVO:
                 # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
                 providers = ["CPUExecutionProvider"]
         else:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            # providers = ["CUDAExecutionProvider"]
+            # providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = ["CUDAExecutionProvider"]
         self._onnx_patchify = ort.InferenceSession(patchify_path, sess_options=so, providers=providers)
         if verbose: print(f'Onnx Patchify Loaded: {self._onnx_patchify}')
     
@@ -500,32 +501,56 @@ class DPVO:
                     name=name,
                     device_type=device,
                     device_id=device_id,
-                    element_type=np.float32 if tensor.dtype == torch.float32 else np.int64,
+                    element_type=(
+                        np.float32 if tensor.dtype in (torch.float32, torch.float16)
+                        else np.int64
+                    ),
                     shape=tuple(tensor.shape),
                     buffer_ptr=tensor.data_ptr(),
-        )
+                )
+
+        # Determine real edge count and (optionally) pad to fixed ONNX size
+        B, E_real, D = net.shape
+        _, _, Cc = corr.shape
+
+        if self.logging:
+            self.log_count += 1
+            if self.log_count == self.log_start_buffer:
+                pd.DataFrame(np.array(net.squeeze(0).cpu())).to_csv('net.csv')
+                pd.DataFrame(np.array(ctx.squeeze(0).cpu())).to_csv('ctx.csv')
+                pd.DataFrame(np.array(corr.squeeze(0).cpu())).to_csv('corr.csv')
+                pd.DataFrame(np.array(ii.cpu())).to_csv('ii.csv')
+                pd.DataFrame(np.array(jj.cpu())).to_csv('jj.csv')
+                pd.DataFrame(np.array(kk.cpu())).to_csv('kk.csv')
+
 
         if self.use_edges_padding:
-            B, E_real, D = net.shape
-            _, _, Cc = corr.shape
             if verbose: print(f'E_real = {E_real}')
             pad_value = self.edges_padded_value - E_real
-            
+
             if pad_value < 0:
-                raise ValueError(f"Number of edges exceeds the padding \
-                    size for onnx. Onnx must be re-exported with \
-                    an increased padding value by {pad_value}.")
+                raise ValueError(
+                    f"Number of edges exceeds the padding size for ONNX. "
+                    f"Re-export update.onnx with edges_padded_value increased by {-pad_value}."
+                )
 
             # create dummy pad variables
-            net_pad = torch.zeros(B, pad_value, D, device=net.device)
-            ctx_pad = torch.zeros_like(net_pad, device=ctx.device)
-            corr_pad = torch.zeros(B, pad_value, Cc, device=corr.device)
-            ii_pad = ii[-1].repeat(pad_value) # repeats last frame
-            jj_pad = jj[-1].repeat(pad_value) # repeats last frame
-            # generates brand new, unconnected edges that should not effect the algorithm
-            kk_pad = kk.max() + torch.arange(1, pad_value + 1, device=kk.device, dtype=kk.dtype)
-            
+            net_pad = torch.zeros(B, pad_value, D, device=net.device, dtype=net.dtype)
+            ctx_pad = torch.zeros(B, pad_value, D, device=ctx.device, dtype=ctx.dtype)
+            corr_pad = torch.zeros(B, pad_value, Cc, device=corr.device, dtype=corr.dtype)
+            #pad 0 method - repeats # 6.68
+            # ii_pad = ii[-1].repeat(pad_value)  # repeats last frame
+            # jj_pad = jj[-1].repeat(pad_value)  # repeats last frame
+            # # generates brand new, unconnected edges that should not affect the algorithm
+            # kk_pad = kk.max() + torch.arange(1, pad_value + 1, device=kk.device, dtype=kk.dtype)
+
+            # pad 2 method - zeros # 8.74
+            ii_pad = torch.zeros(pad_value, device=net.device, dtype=ii.dtype)  
+            jj_pad = torch.zeros(pad_value, device=net.device, dtype=jj.dtype)  
+            kk_pad = torch.zeros(pad_value, device=net.device, dtype=kk.dtype)
+
             # concatenate pad variables onto real values to create a valid padded parameter
+            # # original concatenation
             net_padded = torch.cat([net, net_pad], dim=1)
             ctx_padded = torch.cat([ctx, ctx_pad], dim=1)
             corr_padded = torch.cat([corr, corr_pad], dim=1)
@@ -533,45 +558,83 @@ class DPVO:
             jj_padded = torch.cat([jj, jj_pad], dim=0)
             kk_padded = torch.cat([kk, kk_pad], dim=0)
 
-            self.update_io_binding
+            # reverse order of padding (latest values more important?) # 8.94
+            # net_padded = torch.cat([net_pad, net], dim=1)
+            # ctx_padded = torch.cat([ctx_pad, ctx], dim=1)
+            # corr_padded = torch.cat([corr_pad,corr], dim=1)
+            # ii_padded = torch.cat([ii_pad, ii], dim=0)
+            # jj_padded = torch.cat([jj_pad, jj], dim=0)
+            # kk_padded = torch.cat([kk_pad, kk], dim=0)
+
+        else:
+            # No padding – run with current edge count
+            net_padded = net
+            ctx_padded = ctx
+            corr_padded = corr
+            ii_padded = ii
+            jj_padded = jj
+            kk_padded = kk
 
         if self._onnx_update is not None:
             if verbose: print(f'Running onnx update')
-            feed = {
-                'net_in': net_padded,
-                'inp': ctx_padded,
-                'corr': corr_padded,
-                'flow': None,
+
+            # ONNX model is exported in fp32; ensure inputs are fp32 / int64.
+            net_input = net_padded.to(torch.float32, copy=False)
+            ctx_input = ctx_padded.to(torch.float32, copy=False)
+            corr_input = corr_padded.to(torch.float32, copy=False)
+
+            # Prepare outputs as CUDA tensors and bind with IO binding for zero-copy.
+            Bp, Ep, Dp = net_input.shape
+            net_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            delta_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
+            weight_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
+
+            io_binding = self._onnx_update.io_binding()
+
+            feed_tensors = {
+                'net_in': net_input,
+                'inp': ctx_input,
+                'corr': corr_input,
+                'flow': None,   # optional input in the graph
                 'ii': ii_padded,
                 'jj': jj_padded,
                 'kk': kk_padded,
             }
-            bind_torch_inputs(self.update_io_binding, feed)
-            # feed = {
-            #     'net_in': net_padded.cpu().numpy().astype(np.float32),
-            #     'inp': ctx_padded.cpu().numpy().astype(np.float32),
-            #     'corr': corr_padded.cpu().numpy().astype(np.float32),
-            #     'flow': None,
-            #     'ii': ii_padded.cpu().numpy().astype(np.int64),
-            #     'jj': jj_padded.cpu().numpy().astype(np.int64),
-            #     'kk': kk_padded.cpu().numpy().astype(np.int64),
-            #     }
-            net, delta, weight = \
-                self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
-            outputs = {'net': net[:,:E_real,:], 'delta': delta[:,:E_real], 'weight': weight[:,:E_real]}
-            for name, tensor in outputs.items():
-                self.update_io_binding.bind_output(
-                    name=name,
-                    device_type="cuda",
-                    device_id=0,
-                    element_type=np.float32,
-                    shape=tuple(tensor.shape),
-                    buffer_ptr=tensor.data_ptr(),
-                )
-            # # convert back from numpy to torch tensors and unpad for downstream
-            # net = torch.from_numpy(net[:,:E_real,:]).to('cuda')
-            # delta = torch.from_numpy(delta[:,:E_real]).to('cuda')
-            # weight = torch.from_numpy(weight[:,:E_real]).to('cuda')
+            bind_torch_inputs(io_binding, feed_tensors)
+
+            io_binding.bind_output(
+                name='net_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(net_out.shape),
+                buffer_ptr=net_out.data_ptr(),
+            )
+            io_binding.bind_output(
+                name='delta_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(delta_out.shape),
+                buffer_ptr=delta_out.data_ptr(),
+            )
+            io_binding.bind_output(
+                name='weight_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(weight_out.shape),
+                buffer_ptr=weight_out.data_ptr(),
+            )
+
+            # Execute ONNX model with bound CUDA tensors
+            self._onnx_update.run_with_iobinding(io_binding)
+
+            # Unpad back to the real edge count for downstream PyTorch code
+            net = net_out[:, :E_real, :].to(net.dtype)
+            # Original PyTorch update returns delta/weight with shape (B, E, 2)
+            delta = delta_out[:, :E_real, :]
+            weight = weight_out[:, :E_real, :]
         else: 
             if verbose: print(f'Running pytorch update')
             net, (delta, weight, _) = \
