@@ -13,6 +13,14 @@ from .patchgraph import PatchGraph
 from .utils import *
 
 import os
+try:
+    import onnxruntime as ort
+except ImportError:
+    raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
+
+so = ort.SessionOptions()
+so.log_severity_level = 2  # 0 = verbose
+
 
 verbose = True
 
@@ -145,11 +153,11 @@ class DPVO:
 
     def _load_onnx_encoders_update(self, onnx_dir):
         if verbose: print(f'Loading onnx update model')
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
         update_path = os.path.join(onnx_dir, "update.onnx")
+
+        net_out = torch.empty((B, E, C), device="cuda")
+        delta_out = torch.empty((B, E), device="cuda")
+        weight_out = torch.empty((B, E), device="cuda")
 
         if not os.path.isfile(update_path):
             raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
@@ -182,16 +190,15 @@ class DPVO:
                 providers = ["CPUExecutionProvider"]
         else:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self._onnx_update = ort.InferenceSession(update_path, providers=providers)
+            # providers = ["CUDAExecutionProvider"]
+        self._onnx_update = ort.InferenceSession(update_path, sess_options=so, providers=providers)
+        self.update_io_binding = self._onnx_update.io_binding()
+        self._onnx_update.run_with_iobinding(self.update_io_binding)
+        if verbose: print(f'Onnx Update Loaded: {self._onnx_update}')
     
 
     def _load_onnx_encoders_patchify(self, onnx_dir):
         if verbose: print(f'Loading onnx patchify model')
-
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
         patchify_path = os.path.join(onnx_dir, "patchify.onnx")
         if not os.path.isfile(patchify_path):
             raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
@@ -224,17 +231,12 @@ class DPVO:
                 providers = ["CPUExecutionProvider"]
         else:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self._onnx_patchify = ort.InferenceSession(patchify_path, providers=providers)
+            # providers = ["CUDAExecutionProvider"]
+        self._onnx_patchify = ort.InferenceSession(patchify_path, sess_options=so, providers=providers)
         if verbose: print(f'Onnx Patchify Loaded: {self._onnx_patchify}')
     
     def _load_onnx_encoders_features(self, onnx_dir):
         if verbose: print(f'Loading onnx features only models')
-
-        import os
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise ImportError("onnx_dir requires onnxruntime. Install with: pip install onnxruntime-gpu")
         fnet_path = os.path.join(onnx_dir, "fnet.onnx")
         inet_path = os.path.join(onnx_dir, "inet.onnx")
         if not os.path.isfile(fnet_path) or not os.path.isfile(inet_path):
@@ -269,8 +271,8 @@ class DPVO:
                 providers = ["CPUExecutionProvider"]
         else:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self._onnx_fnet = ort.InferenceSession(fnet_path, providers=providers)
-        self._onnx_inet = ort.InferenceSession(inet_path, providers=providers)
+        self._onnx_fnet = ort.InferenceSession(fnet_path, sess_options=so, providers=providers)
+        self._onnx_inet = ort.InferenceSession(inet_path, sess_options=so, providers=providers)
 
     def start_viewer(self):
         from dpviewer import Viewer
@@ -487,6 +489,22 @@ class DPVO:
 
 
     def update_inner(self, net, corr, ctx, ii, jj, kk):
+        def bind_torch_inputs(io_binding, inputs: dict, device="cuda", device_id=0):
+            for name, tensor in inputs.items():
+                if tensor is None:
+                    continue
+
+                assert tensor.is_cuda, f"{name} must be on GPU for zero-copy"
+
+                io_binding.bind_input(
+                    name=name,
+                    device_type=device,
+                    device_id=device_id,
+                    element_type=np.float32 if tensor.dtype == torch.float32 else np.int64,
+                    shape=tuple(tensor.shape),
+                    buffer_ptr=tensor.data_ptr(),
+        )
+
         if self.use_edges_padding:
             B, E_real, D = net.shape
             _, _, Cc = corr.shape
@@ -515,23 +533,45 @@ class DPVO:
             jj_padded = torch.cat([jj, jj_pad], dim=0)
             kk_padded = torch.cat([kk, kk_pad], dim=0)
 
+            self.update_io_binding
+
         if self._onnx_update is not None:
             if verbose: print(f'Running onnx update')
             feed = {
-                'net_in': net_padded.cpu().numpy().astype(np.float32),
-                'inp': ctx_padded.cpu().numpy().astype(np.float32),
-                'corr': corr_padded.cpu().numpy().astype(np.float32),
+                'net_in': net_padded,
+                'inp': ctx_padded,
+                'corr': corr_padded,
                 'flow': None,
-                'ii': ii_padded.cpu().numpy().astype(np.int64),
-                'jj': jj_padded.cpu().numpy().astype(np.int64),
-                'kk': kk_padded.cpu().numpy().astype(np.int64),
-                }
+                'ii': ii_padded,
+                'jj': jj_padded,
+                'kk': kk_padded,
+            }
+            bind_torch_inputs(self.update_io_binding, feed)
+            # feed = {
+            #     'net_in': net_padded.cpu().numpy().astype(np.float32),
+            #     'inp': ctx_padded.cpu().numpy().astype(np.float32),
+            #     'corr': corr_padded.cpu().numpy().astype(np.float32),
+            #     'flow': None,
+            #     'ii': ii_padded.cpu().numpy().astype(np.int64),
+            #     'jj': jj_padded.cpu().numpy().astype(np.int64),
+            #     'kk': kk_padded.cpu().numpy().astype(np.int64),
+            #     }
             net, delta, weight = \
                 self._onnx_update.run(output_names=None, input_feed=feed, run_options=None)
-            # convert back from numpy to torch tensors
-            net = torch.from_numpy(net).to('cuda')
-            delta = torch.from_numpy(delta[:,:E_real]).to('cuda')
-            weight = torch.from_numpy(weight[:,:E_real]).to('cuda')
+            outputs = {'net': net[:,:E_real,:], 'delta': delta[:,:E_real], 'weight': weight[:,:E_real]}
+            for name, tensor in outputs.items():
+                self.update_io_binding.bind_output(
+                    name=name,
+                    device_type="cuda",
+                    device_id=0,
+                    element_type=np.float32,
+                    shape=tuple(tensor.shape),
+                    buffer_ptr=tensor.data_ptr(),
+                )
+            # # convert back from numpy to torch tensors and unpad for downstream
+            # net = torch.from_numpy(net[:,:E_real,:]).to('cuda')
+            # delta = torch.from_numpy(delta[:,:E_real]).to('cuda')
+            # weight = torch.from_numpy(weight[:,:E_real]).to('cuda')
         else: 
             if verbose: print(f'Running pytorch update')
             net, (delta, weight, _) = \
