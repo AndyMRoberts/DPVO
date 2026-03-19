@@ -19,6 +19,7 @@ from .blocks import GradientClip, GatedResidual, SoftAgg
 from .utils import *
 from .ba import BA
 from . import projective_ops as pops
+from . import onnx_mods
 
 autocast = partial(torch.amp.autocast, "cuda")
 import matplotlib.pyplot as plt
@@ -80,7 +81,8 @@ class Update(nn.Module):
         net = net + inp + self.corr(corr)
         net = self.norm(net)
 
-        ix, jx = fastba.neighbors(kk, jj)
+        # ix, jx = fastba.neighbors(kk, jj)
+        ix, jx = onnx_mods.neighbors(kk, jj)
         mask_ix = (ix >= 0).float().reshape(1, -1, 1)
         mask_jx = (jx >= 0).float().reshape(1, -1, 1)
 

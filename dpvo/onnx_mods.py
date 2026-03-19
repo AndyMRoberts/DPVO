@@ -1,6 +1,27 @@
 # defines various functions in pytorch from cuda/other libraries that are not exportable to onnx
 import torch
 
+
+def neighbors(kk: torch.Tensor, jj: torch.Tensor):
+    """
+    PyTorch implementation of fastba.neighbors. For each element, returns the
+    previous (ix) and next (jx) temporal neighbor index within the same kk group,
+    when ordering by jj. -1 means no previous/next neighbor.
+    Fully vectorized (no Python loops) so ONNX export is fast and trace-friendly.
+    """
+    # Sort by kk first, then jj (PyTorch has no lexsort; use composite key).
+    jj_max = jj.max() + 1
+    key = kk * jj_max + jj
+    order = torch.argsort(key, stable=True)
+    n = kk.shape[0]
+    device = kk.device
+    ix = torch.full((n,), -1, dtype=torch.long, device=device)
+    jx = torch.full((n,), -1, dtype=torch.long, device=device)
+    ix[order[1:]] = order[:-1]
+    jx[order[:-1]] = order[1:]
+    return ix, jx
+
+
 def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
     """
     Taken from torch_scatter
