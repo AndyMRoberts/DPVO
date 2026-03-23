@@ -8,14 +8,13 @@ python andy/manual_test.py
 run normal pytorch version
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_pytorch_data_collecting \
-    --description "collecting data for max edges count, to be used in onnx exporting" \
+    --test_run_name tartan_pytorch_dummy_inputs \
+    --description "collecting inputs to update for use in onnx export" \
     --weights dpvo.pth \
     --split test \
     --power_log 
-
-
 ```
+
 baseline onnx/pytorch features only models running
 ```bash
 python launch_evaluation.py \
@@ -54,8 +53,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_logging_values \
-    --description "Set up logs for the update inputs using pandas" \
+    --test_run_name tartan_mono_onnx_all_50k \
+    --description "exported patchify to onnx and now has a pytorch version of neighbours included, and colected real inputs to be used as the dummy inputs" \
     --weights dpvo.pth \
     --split test \
     --power_log \
@@ -139,3 +138,4 @@ Modifications to allow update onnx export
 - blocks.py> SoftAggBasic/ SoftAgg > lines 61:62 - converted from torch_scatter to onnx_mods.py versions
 - dpvo > update() - now pads negligible values to match a fixed onnx model size. 
 - dpvo > load_weights() - modified to not load the VONet weights anymore and only uses onnx weights
+- **Real dummy inputs for export**: run DPVO with `record_update_dummy_inputs=True` (and optionally `record_update_dummy_inputs_path="andy/onnx/input_payload.pth"`). Copy/rename the saved file to `andy/onnx/input_payload.pth`. `onnx_conversion.ipynb` loads it when present and pads with `pad_update_inputs_like_dpvo` (same rules as `DPVO.update_inner`).

@@ -37,7 +37,10 @@ Id = SE3.Identity(1, device="cuda")
 
 class DPVO:
 
-    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type='patchify'):
+    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type='patchify',
+                 record_update_dummy_inputs=True,
+                 record_update_dummy_inputs_once=False,
+                 record_update_dummy_inputs_path='/home/campus.ncl.ac.uk/c4071391/Projects/DPVO/andy/onnx/input_payload.pth'):
         # onnx additions
         self._onnx_fnet = None
         self._onnx_inet = None
@@ -49,6 +52,12 @@ class DPVO:
         self.logging = False
         self.log_start_buffer = 100
         self.log_count = 0
+
+        # Snapshot net/ctx/corr/ii/jj/kk for ONNX export dummy inputs (PyTorch update path only).
+        self.record_update_dummy_inputs = record_update_dummy_inputs
+        self.record_update_dummy_inputs_once = record_update_dummy_inputs_once
+        self.record_update_dummy_inputs_path = record_update_dummy_inputs_path
+        self._update_dummy_inputs = None
 
         self.cfg = cfg
         self.load_weights(network, onnx_dir=onnx_dir, onnx_type=onnx_type)
@@ -637,10 +646,32 @@ class DPVO:
             weight = weight_out[:, :E_real, :]
         else: 
             if verbose: print(f'Running pytorch update')
+            self._maybe_record_update_dummy_inputs(net, ctx, corr, ii, jj, kk)
             net, (delta, weight, _) = \
                 self.network.update(net, ctx, corr, None, ii, jj, kk)
         
         return net, delta, weight
+
+    def _maybe_record_update_dummy_inputs(self, net, ctx, corr, ii, jj, kk):
+        """When record_update_dummy_inputs is True, save tensors for torch.onnx.export."""
+        if not self.record_update_dummy_inputs:
+            return
+        if self.record_update_dummy_inputs_once and self._update_dummy_inputs is not None:
+            return
+        payload = {
+            'net_in': net.detach().cpu().float().clone(),
+            'inp': ctx.detach().cpu().float().clone(),
+            'corr': corr.detach().cpu().float().clone(),
+            'flow': None,
+            'ii': ii.detach().cpu().clone(),
+            'jj': jj.detach().cpu().clone(),
+            'kk': kk.detach().cpu().clone(),
+        }
+        self._update_dummy_inputs = payload
+        if self.record_update_dummy_inputs_path:
+            torch.save(payload, self.record_update_dummy_inputs_path)
+            if verbose:
+                print(f'[DPVO] Saved update dummy inputs to {self.record_update_dummy_inputs_path}')
 
     def update(self):
         with Timer("other", enabled=self.enable_timing):
