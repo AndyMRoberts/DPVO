@@ -185,15 +185,15 @@ class DPVO:
     def _load_onnx_encoders_update_modular(self, onnx_dir):
         if verbose: print(f'Loading onnx update modular model')
         
-        module_paths = {'corr_onnx_path': os.path.join(onnx_dir, "corr.onnx"),
-                        'norm_onnx_path': os.path.join(onnx_dir, "norm.onnx"),
-                        'c1_onnx_path': os.path.join(onnx_dir, "c1.onnx"),
-                        'c2_onnx_path': os.path.join(onnx_dir, "c2.onnx"),
-                        'agg_kk_onnx_path': os.path.join(onnx_dir, "agg_kk.onnx"),
-                        'agg_ij_onnx_path': os.path.join(onnx_dir, "agg_ij.onnx"),
-                        'gru_onnx_path': os.path.join(onnx_dir, "gru.onnx"),
-                        'w_onnx_path': os.path.join(onnx_dir, "w.onnx"),
-                        'd_onnx_path': os.path.join(onnx_dir, "d.onnx")}
+        module_paths = {'corr': os.path.join(onnx_dir, "corr.onnx"),
+                        'norm': os.path.join(onnx_dir, "norm.onnx"),
+                        'c1': os.path.join(onnx_dir, "c1.onnx"),
+                        'c2': os.path.join(onnx_dir, "c2.onnx"),
+                        'agg_kk': os.path.join(onnx_dir, "agg_kk.onnx"),
+                        'agg_ij': os.path.join(onnx_dir, "agg_ij.onnx"),
+                        'gru': os.path.join(onnx_dir, "gru.onnx"),
+                        'w': os.path.join(onnx_dir, "w.onnx"),
+                        'd': os.path.join(onnx_dir, "d.onnx")}
         module_sessions = {}
         for name, module_path in module_paths.items():
             if not os.path.isfile(module_path):
@@ -715,7 +715,7 @@ class DPVO:
             delta_io_binding = self._onnx_update_modular['d'].io_binding()
 
             # --------------corr--------------
-            bind_torch_inputs(corr_io_binding, {'corr': corr_input})
+            bind_torch_inputs(corr_io_binding, {'corr_input': corr_input})
             corr_io_binding.bind_output(
                 name='corr_out',
                 device_type="cuda",
@@ -726,9 +726,9 @@ class DPVO:
             )
             self._onnx_update_modular['corr'].run_with_iobinding(corr_io_binding)
             # -------------------------------
-            net = net + ctx_input + corr_out
+            net_input = net + ctx_input + corr_out
             # --------------norm-------------
-            bind_torch_inputs(norm_io_binding, {'net': net})
+            bind_torch_inputs(norm_io_binding, {'net_input': net_input})
             norm_io_binding.bind_output(
                 name='norm_out',
                 device_type="cuda",
@@ -745,19 +745,20 @@ class DPVO:
             # -----------------c1--------------------
             c1_input = mask_ix * norm_out[:,ix]
             bind_torch_inputs(c1_io_binding, {'c1_input': c1_input})
-            norm_io_binding.bind_output(
+            c1_io_binding.bind_output(
                 name='c1_out',
                 device_type="cuda",
                 device_id=0,
                 element_type=np.float32,
-                shape=tuple(net_out.shape),
-                buffer_ptr=net_out.data_ptr(),
+                shape=tuple(c1_out.shape),
+                buffer_ptr=c1_out.data_ptr(),
             )
             self._onnx_update_modular['c1'].run_with_iobinding(c1_io_binding)
             # -----------------c2--------------------
-            c2_input = mask_jx * c1_out[:,jx]
+            net = net + c1_out
+            c2_input = mask_jx * net[:,jx]
             bind_torch_inputs(c2_io_binding, {'c2_input': c2_input})
-            norm_io_binding.bind_output(
+            c2_io_binding.bind_output(
                 name='c2_out',
                 device_type="cuda",
                 device_id=0,
@@ -766,9 +767,10 @@ class DPVO:
                 buffer_ptr=c2_out.data_ptr(),
             )
             self._onnx_update_modular['c2'].run_with_iobinding(c2_io_binding)
+            net = net + c2_out
             # -----------------agg_kk--------------------
-            bind_torch_inputs(agg_kk_io_binding, {'net_input': c2_out, 'kk': kk})
-            norm_io_binding.bind_output(
+            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net, 'kk_input': kk})
+            agg_kk_io_binding.bind_output(
                 name='agg_kk_out',
                 device_type="cuda",
                 device_id=0,
@@ -777,10 +779,11 @@ class DPVO:
                 buffer_ptr=agg_kk_out.data_ptr(),
             )
             self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
+            net = net + agg_kk_out
             # -----------------agg_ij--------------------
-            agg_ij_input = ii*12345 + jj
-            bind_torch_inputs(agg_ij_io_binding, {'net_input': agg_kk_out, 'agg_ij_input': agg_ij_input})
-            norm_io_binding.bind_output(
+            iijj_input = ii*12345 + jj
+            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net, 'iijj_input': iijj_input})
+            agg_ij_io_binding.bind_output(
                 name='agg_ij_out',
                 device_type="cuda",
                 device_id=0,
@@ -789,9 +792,10 @@ class DPVO:
                 buffer_ptr=agg_ij_out.data_ptr(),
             )
             self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
+            net = net + agg_ij_out
             # -----------------gru--------------------
-            bind_torch_inputs(gru_io_binding, {'net_input': agg_ij_out})
-            norm_io_binding.bind_output(
+            bind_torch_inputs(gru_io_binding, {'gru_input': net})
+            gru_io_binding.bind_output(
                 name='net_out',
                 device_type="cuda",
                 device_id=0,
@@ -802,7 +806,7 @@ class DPVO:
             self._onnx_update_modular['gru'].run_with_iobinding(gru_io_binding)
             # -----------------weight--------------------
             bind_torch_inputs(weight_io_binding, {'net_input': net_out})
-            norm_io_binding.bind_output(
+            weight_io_binding.bind_output(
                 name='weight_out',
                 device_type="cuda",
                 device_id=0,
@@ -813,7 +817,7 @@ class DPVO:
             self._onnx_update_modular['w'].run_with_iobinding(weight_io_binding)
             # -----------------delta--------------------
             bind_torch_inputs(delta_io_binding, {'net_input': net_out})
-            norm_io_binding.bind_output(
+            delta_io_binding.bind_output(
                 name='delta_out',
                 device_type="cuda",
                 device_id=0,
@@ -954,8 +958,6 @@ class DPVO:
                         centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
                         return_color=True
                         )
-
-
 
         ### update state attributes ###
         self.tlist.append(tstamp)
