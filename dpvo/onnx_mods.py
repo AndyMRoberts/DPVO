@@ -87,112 +87,78 @@ def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
     return src
 
 
+def _dim_size_from_index(index: torch.Tensor, dim: int, dim_size=None):
+    if dim_size is not None:
+        return int(dim_size)
+    return int(index.max().item()) + 1
+
+
 def torch_scatter_max(src, index, dim, dim_size=None):
     """
-    To replace the torch_scatter implementation.
-    For the scatter_softmax use case we want an output with the SAME SHAPE
-    as src, where entries that share the same index along `dim` contain the
-    group's maximum. The caller is responsible for broadcasting `index`
-    to match src's shape.
+    Match torch_scatter.scatter_max reduced output along `dim`:
+    out[..., g, ...] = max over src positions that map to g.
+
+    Returns (out_reduced, index_broadcast) where out_reduced.shape[dim] == dim_size.
+    Second value mirrors torch_scatter (callers in onnx_mods only use [0]).
     """
-    # Make dim non-negative
     if dim < 0:
         dim = src.dim() + dim
-
-    # Ensure index has same shape/rank as src along dim
     index = broadcast(index, src, dim)
-
-    # Start from the identity for max (-inf) and ignore the existing values via
-    # include_self=False so we only reduce over `src`.
-    out = torch.full_like(src, float("-inf"))
-    out = out.scatter_reduce_(dim, index, src, reduce="amax")
-
-    # Return a dummy second value for compatibility with torch_scatter API.
+    idx = index.long()
+    ds = _dim_size_from_index(idx, dim, dim_size)
+    out_shape = list(src.shape)
+    out_shape[dim] = ds
+    out = torch.full(
+        out_shape, float("-inf"), dtype=src.dtype, device=src.device
+    )
+    # out is -inf so amax(-inf, x) == x; duplicate indices aggregate like torch_scatter.scatter_max
+    out.scatter_reduce_(dim, idx, src, reduce="amax")
     return out, index
+
 
 def torch_scatter_sum(src, index, dim, dim_size=None):
     """
-    To replace the torch_scatter implementation:
-    class ScatterSum : public torch::autograd::Function<ScatterSum> {
-        public:
-        static variable_list forward(AutogradContext *ctx, Variable src,
-                               Variable index, int64_t dim,
-                               std::optional<Variable> optional_out,
-                               std::optional<int64_t> dim_size) {
-        dim = dim < 0 ? src.dim() + dim : dim;
-        ctx->saved_data["dim"] = dim;
-        ctx->saved_data["src_shape"] = src.sizes();
-        index = broadcast(index, src, dim);
-        auto result = scatter_fw(src, index, dim, optional_out, dim_size, "sum");
-        auto out = std::get<0>(result);
-        ctx->save_for_backward({index});
-        if (optional_out.has_value())
-        ctx->mark_dirty({optional_out.value()});
-        return {out};
-        }
+    Match torch_scatter.scatter_sum: reduced tensor along `dim` (same as torch_scatter),
+    not same shape as src. Use .gather(dim, index) to broadcast to per-edge layout.
     """
-    # Make dim non-negative
     if dim < 0:
         dim = src.dim() + dim
-
-    # Same semantics as torch_scatter_max above: output has the SAME SHAPE as
-    # src. Allow index to be 1-D or already broadcast; normalize to src shape.
     index = broadcast(index, src, dim)
-
-    out = torch.zeros_like(src)
-    out = out.scatter_reduce_(dim, index, src, reduce="sum")
+    idx = index.long()
+    ds = _dim_size_from_index(idx, dim, dim_size)
+    out_shape = list(src.shape)
+    out_shape[dim] = ds
+    out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
+    out.scatter_add_(dim, idx, src)
     return out
-
-
-
 
 
 def torch_scatter_softmax(src, index, dim=1, dim_size=None):
     """
-    --------
-    To replace the torch_scatter implementation
-    --------
-    def scatter_softmax(src: torch.Tensor, index: torch.Tensor,
-                    dim: int = -1,
-                    dim_size: Optional[int] = None) -> torch.Tensor:
-    if not torch.is_floating_point(src):
-        raise ValueError('`scatter_softmax` can only be computed over tensors '
-                         'with floating point data types.')
-
-    index = broadcast(index, src, dim)
-
-    max_value_per_index = scatter_max(
-        src, index, dim=dim, dim_size=dim_size)[0]
-    max_per_src_element = max_value_per_index.gather(dim, index)
-
-    recentered_scores = src - max_per_src_element
-    recentered_scores_exp = recentered_scores.exp_()
-
-    sum_per_index = scatter_sum(
-        recentered_scores_exp, index, dim, dim_size=dim_size)
-    normalizing_constants = sum_per_index.gather(dim, index)
-
-    return recentered_scores_exp.div(normalizing_constants)
+    Match torch_scatter.scatter_softmax (same math as PyG); output shape == src.shape.
     """
-
     if not torch.is_floating_point(src):
-        raise ValueError('`scatter_softmax` can only be computed over tensors '
-                         'with floating point data types.')
+        raise ValueError(
+            "`torch_scatter_softmax` can only be computed over tensors "
+            "with floating point data types."
+        )
 
+    if dim < 0:
+        dim = src.dim() + dim
     index = broadcast(index, src, dim)
+    idx = index.long()
+    if dim_size is None:
+        dim_size = int(idx.max().item()) + 1
 
-    max_value_per_index = torch_scatter_max(
-        src, index, dim=dim, dim_size=dim_size)[0]
-
-    max_per_src_element = max_value_per_index.gather(dim, index)
+    max_value_per_index = torch_scatter_max(src, idx, dim=dim, dim_size=dim_size)[0]
+    max_per_src_element = max_value_per_index.gather(dim, idx)
 
     recentered_scores = src - max_per_src_element
-    recentered_scores_exp = recentered_scores.exp_()
+    recentered_scores_exp = recentered_scores.exp()
 
     sum_per_index = torch_scatter_sum(
-        recentered_scores_exp, index, dim, dim_size=dim_size)
-    normalizing_constants = sum_per_index.gather(dim, index)
+        recentered_scores_exp, idx, dim=dim, dim_size=dim_size
+    )
+    normalizing_constants = sum_per_index.gather(dim, idx)
 
     return recentered_scores_exp.div(normalizing_constants)
-
-

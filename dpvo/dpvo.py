@@ -769,7 +769,8 @@ class DPVO:
             self._onnx_update_modular['c2'].run_with_iobinding(c2_io_binding)
             net = net + c2_out
             # -----------------agg_kk--------------------
-            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net, 'kk_input': kk})
+            _, jx = torch.unique(kk, return_inverse=True)
+            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net, 'jx_input': jx})
             agg_kk_io_binding.bind_output(
                 name='agg_kk_out',
                 device_type="cuda",
@@ -781,8 +782,9 @@ class DPVO:
             self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
             net = net + agg_kk_out
             # -----------------agg_ij--------------------
-            iijj_input = ii*12345 + jj
-            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net, 'iijj_input': iijj_input})
+            ix = ii*12345 + jj
+            _, jx = torch.unique(ix, return_inverse=True)
+            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net, 'jx_input': jx})
             agg_ij_io_binding.bind_output(
                 name='agg_ij_out',
                 device_type="cuda",

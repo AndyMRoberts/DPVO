@@ -38,8 +38,10 @@ class SoftAgg(nn.Module):
         self.g = nn.Linear(self.dim, self.dim)
         self.h = nn.Linear(self.dim, self.dim)
 
-    def forward(self, x, ix):
-        _, jx = torch.unique(ix, return_inverse=True)
+    def forward(self, x, jx):
+        # this was pulled out of the forward method to allow onnx export
+        # jx is passed in instead
+        #_, jx = torch.unique(ix, return_inverse=True)
         # converted to normal pytorch from torch_scatter to allow onnx export
 
         # w = torch_scatter.scatter_softmax(self.g(x), jx, dim=1)
