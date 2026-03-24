@@ -49,12 +49,12 @@ python evaluate_tartan_andy.py \
 ```
 
 with onnx
-# set onnx_type to 'features', 'patchify', or 'all' so far
+# set onnx_type to 'features', 'patchify', 'all' or 'all_modular' so far
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_all_50k \
-    --description "exported patchify to onnx and now has a pytorch version of neighbours included, and colected real inputs to be used as the dummy inputs" \
+    --test_run_name tartan_mono_onnx_all_modular \
+    --description "First running of the individual update blocks in onnx format" \
     --weights dpvo.pth \
     --split test \
     --power_log \
@@ -64,7 +64,7 @@ python launch_evaluation.py \
     --plot \
     --backend onnx \
     --onnx_dir andy/onnx \
-    --onnx_type all
+    --onnx_type all_modular
 ```
 
 

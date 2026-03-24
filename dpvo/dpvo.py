@@ -128,7 +128,7 @@ class DPVO:
 
     def load_weights(self, network, onnx_dir=None, onnx_type='patchify'):
         # load network from checkpoint file
-        if onnx_type == 'all':
+        if onnx_type == 'all' or onnx_type == 'all_modular':
             # only these values and corrblock are needed when using full onnx implementation
             self.DIM = net.DIM
             self.RES = net.RES
@@ -166,15 +166,12 @@ class DPVO:
                 self.use_edges_padding = True
                 self._load_onnx_encoders_patchify(onnx_dir)
                 self._load_onnx_encoders_update(onnx_dir)
-
-    def _load_onnx_encoders_update(self, onnx_dir):
-        if verbose: print(f'Loading onnx update model')
-        update_path = os.path.join(onnx_dir, "update.onnx")
-
-        if not os.path.isfile(update_path):
-            raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
-        # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
-        def _model_uses_conv_integer(path):
+            elif onnx_type == 'all_modular':
+                self.use_edges_padding = False
+                self._load_onnx_encoders_patchify(onnx_dir)
+                self._load_onnx_encoders_update_modular(onnx_dir)
+    
+    def _model_uses_conv_integer(self, path):
             try:
                 import onnx
                 m = onnx.load(path)
@@ -184,9 +181,59 @@ class DPVO:
                 return False
             except Exception:
                 return False
+
+    def _load_onnx_encoders_update_modular(self, onnx_dir):
+        if verbose: print(f'Loading onnx update modular model')
+        
+        module_paths = {'corr_onnx_path': os.path.join(onnx_dir, "corr.onnx"),
+                        'norm_onnx_path': os.path.join(onnx_dir, "norm.onnx"),
+                        'c1_onnx_path': os.path.join(onnx_dir, "c1.onnx"),
+                        'c2_onnx_path': os.path.join(onnx_dir, "c2.onnx"),
+                        'agg_kk_onnx_path': os.path.join(onnx_dir, "agg_kk.onnx"),
+                        'agg_ij_onnx_path': os.path.join(onnx_dir, "agg_ij.onnx"),
+                        'gru_onnx_path': os.path.join(onnx_dir, "gru.onnx"),
+                        'w_onnx_path': os.path.join(onnx_dir, "w.onnx"),
+                        'd_onnx_path': os.path.join(onnx_dir, "d.onnx")}
+        module_sessions = {}
+        for name, module_path in module_paths.items():
+            if not os.path.isfile(module_path):
+                raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir} for {name}. Run andy/onnx_conversion.ipynb first.")
+            # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
+               
+            onnx_dir_str = os.path.normpath(str(onnx_dir))
+            is_quantized = (
+                self._model_uses_conv_integer(module_path)
+                or "int8" in onnx_dir_str
+                or "quant" in onnx_dir_str.lower()
+            )
+            # Quantized models use ConvInteger: CUDA EP doesn't implement it; CPU EP in onnxruntime-gpu
+            # may not either. TensorRT EP can run INT8 on GPU. Prefer TensorRT > CUDA > CPU for quantized.
+            if is_quantized:
+                available = ort.get_available_providers()
+                if "TensorrtExecutionProvider" in available:
+                    print("Tensorrt available")
+                    providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+                else:
+                    # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
+                    providers = ["CPUExecutionProvider"]
+            else:
+                # providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                providers = ["CUDAExecutionProvider"]
+            module_sessions[name] = ort.InferenceSession(module_path, sess_options=so, providers=providers)
+            if verbose: print(f'Onnx {name} module loaded: {module_sessions[name]}')
+        self._onnx_update_modular = module_sessions
+
+    def _load_onnx_encoders_update(self, onnx_dir):
+        if verbose: print(f'Loading onnx update model')
+        update_path = os.path.join(onnx_dir, "update.onnx")
+
+        if not os.path.isfile(update_path):
+            raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
+        # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
+        
         onnx_dir_str = os.path.normpath(str(onnx_dir))
         is_quantized = (
-            _model_uses_conv_integer(update_path)
+            self._model_uses_conv_integer(update_path)
             or "int8" in onnx_dir_str
             or "quant" in onnx_dir_str.lower()
         )
@@ -213,19 +260,10 @@ class DPVO:
         if not os.path.isfile(patchify_path):
             raise FileNotFoundError(f"ONNX encoder file not found in {onnx_dir}. Run andy/onnx_conversion.ipynb first.")
         # Quantized (int8) ONNX models use ConvInteger, which is only implemented on CPU.
-        def _model_uses_conv_integer(path):
-            try:
-                import onnx
-                m = onnx.load(path)
-                for node in m.graph.node:
-                    if node.op_type == "ConvInteger":
-                        return True
-                return False
-            except Exception:
-                return False
+
         onnx_dir_str = os.path.normpath(str(onnx_dir))
         is_quantized = (
-            _model_uses_conv_integer(patchify_path)
+            self._model_uses_conv_integer(patchify_path)
             or "int8" in onnx_dir_str
             or "quant" in onnx_dir_str.lower()
         )
@@ -560,12 +598,12 @@ class DPVO:
 
             # concatenate pad variables onto real values to create a valid padded parameter
             # # original concatenation
-            net_padded = torch.cat([net, net_pad], dim=1)
-            ctx_padded = torch.cat([ctx, ctx_pad], dim=1)
-            corr_padded = torch.cat([corr, corr_pad], dim=1)
-            ii_padded = torch.cat([ii, ii_pad], dim=0)
-            jj_padded = torch.cat([jj, jj_pad], dim=0)
-            kk_padded = torch.cat([kk, kk_pad], dim=0)
+            net = torch.cat([net, net_pad], dim=1)
+            ctx = torch.cat([ctx, ctx_pad], dim=1)
+            corr = torch.cat([corr, corr_pad], dim=1)
+            ii = torch.cat([ii, ii_pad], dim=0)
+            jj = torch.cat([jj, jj_pad], dim=0)
+            kk = torch.cat([kk, kk_pad], dim=0)
 
             # reverse order of padding (latest values more important?) # 8.94
             # net_padded = torch.cat([net_pad, net], dim=1)
@@ -588,9 +626,9 @@ class DPVO:
             if verbose: print(f'Running onnx update')
 
             # ONNX model is exported in fp32; ensure inputs are fp32 / int64.
-            net_input = net_padded.to(torch.float32, copy=False)
-            ctx_input = ctx_padded.to(torch.float32, copy=False)
-            corr_input = corr_padded.to(torch.float32, copy=False)
+            net_input = net.to(torch.float32, copy=False)
+            ctx_input = ctx.to(torch.float32, copy=False)
+            corr_input = corr.to(torch.float32, copy=False)
 
             # Prepare outputs as CUDA tensors and bind with IO binding for zero-copy.
             Bp, Ep, Dp = net_input.shape
@@ -605,9 +643,9 @@ class DPVO:
                 'inp': ctx_input,
                 'corr': corr_input,
                 'flow': None,   # optional input in the graph
-                'ii': ii_padded,
-                'jj': jj_padded,
-                'kk': kk_padded,
+                'ii': ii,
+                'jj': jj,
+                'kk': kk,
             }
             bind_torch_inputs(io_binding, feed_tensors)
 
@@ -637,13 +675,158 @@ class DPVO:
             )
 
             # Execute ONNX model with bound CUDA tensors
-            self._onnx_update.run_with_iobinding(io_binding)
+            self._onnx_update_.run_with_iobinding(io_binding)
 
             # Unpad back to the real edge count for downstream PyTorch code
             net = net_out[:, :E_real, :].to(net.dtype)
             # Original PyTorch update returns delta/weight with shape (B, E, 2)
             delta = delta_out[:, :E_real, :]
             weight = weight_out[:, :E_real, :]
+
+        elif self._onnx_update_modular is not None:
+            if verbose: print(f'Running onnx update modular')
+
+            # ONNX model is exported in fp32; ensure inputs are fp32 / int64.
+            net_input = net.to(torch.float32, copy=False)
+            ctx_input = ctx.to(torch.float32, copy=False)
+            corr_input = corr.to(torch.float32, copy=False)
+            ii_input = ii.to(torch.int64, copy=False)
+
+            # Prepare outputs as CUDA tensors and bind with IO binding for zero-copy.
+            Bp, Ep, Dp = net_input.shape
+            corr_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            norm_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            c1_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            c2_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            agg_kk_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            agg_ij_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            net_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
+            weight_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
+            delta_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
+
+            corr_io_binding = self._onnx_update_modular['corr'].io_binding()  
+            norm_io_binding = self._onnx_update_modular['norm'].io_binding()
+            c1_io_binding = self._onnx_update_modular['c1'].io_binding()
+            c2_io_binding = self._onnx_update_modular['c2'].io_binding()
+            agg_kk_io_binding = self._onnx_update_modular['agg_kk'].io_binding()
+            agg_ij_io_binding = self._onnx_update_modular['agg_ij'].io_binding()
+            gru_io_binding = self._onnx_update_modular['gru'].io_binding()
+            weight_io_binding = self._onnx_update_modular['w'].io_binding()
+            delta_io_binding = self._onnx_update_modular['d'].io_binding()
+
+            # --------------corr--------------
+            bind_torch_inputs(corr_io_binding, {'corr': corr_input})
+            corr_io_binding.bind_output(
+                name='corr_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(corr_out.shape),
+                buffer_ptr=corr_out.data_ptr(),
+            )
+            self._onnx_update_modular['corr'].run_with_iobinding(corr_io_binding)
+            # -------------------------------
+            net = net + ctx_input + corr_out
+            # --------------norm-------------
+            bind_torch_inputs(norm_io_binding, {'net': net})
+            norm_io_binding.bind_output(
+                name='norm_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(norm_out.shape),
+                buffer_ptr=norm_out.data_ptr(),
+            )
+            self._onnx_update_modular['norm'].run_with_iobinding(norm_io_binding)
+            # -------------------------------------
+            ix, jx = fastba.neighbors(kk, jj)
+            mask_ix = (ix >= 0).float().reshape(1, -1, 1)
+            mask_jx = (jx >= 0).float().reshape(1, -1, 1)
+            # -----------------c1--------------------
+            c1_input = mask_ix * norm_out[:,ix]
+            bind_torch_inputs(c1_io_binding, {'c1_input': c1_input})
+            norm_io_binding.bind_output(
+                name='c1_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(net_out.shape),
+                buffer_ptr=net_out.data_ptr(),
+            )
+            self._onnx_update_modular['c1'].run_with_iobinding(c1_io_binding)
+            # -----------------c2--------------------
+            c2_input = mask_jx * c1_out[:,jx]
+            bind_torch_inputs(c2_io_binding, {'c2_input': c2_input})
+            norm_io_binding.bind_output(
+                name='c2_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(c2_out.shape),
+                buffer_ptr=c2_out.data_ptr(),
+            )
+            self._onnx_update_modular['c2'].run_with_iobinding(c2_io_binding)
+            # -----------------agg_kk--------------------
+            bind_torch_inputs(agg_kk_io_binding, {'net_input': c2_out, 'kk': kk})
+            norm_io_binding.bind_output(
+                name='agg_kk_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(agg_kk_out.shape),
+                buffer_ptr=agg_kk_out.data_ptr(),
+            )
+            self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
+            # -----------------agg_ij--------------------
+            agg_ij_input = ii*12345 + jj
+            bind_torch_inputs(agg_ij_io_binding, {'net_input': agg_kk_out, 'agg_ij_input': agg_ij_input})
+            norm_io_binding.bind_output(
+                name='agg_ij_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(agg_ij_out.shape),
+                buffer_ptr=agg_ij_out.data_ptr(),
+            )
+            self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
+            # -----------------gru--------------------
+            bind_torch_inputs(gru_io_binding, {'net_input': agg_ij_out})
+            norm_io_binding.bind_output(
+                name='net_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(net_out.shape),
+                buffer_ptr=net_out.data_ptr(),
+            )
+            self._onnx_update_modular['gru'].run_with_iobinding(gru_io_binding)
+            # -----------------weight--------------------
+            bind_torch_inputs(weight_io_binding, {'net_input': net_out})
+            norm_io_binding.bind_output(
+                name='weight_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(weight_out.shape),
+                buffer_ptr=weight_out.data_ptr(),
+            )
+            self._onnx_update_modular['w'].run_with_iobinding(weight_io_binding)
+            # -----------------delta--------------------
+            bind_torch_inputs(delta_io_binding, {'net_input': net_out})
+            norm_io_binding.bind_output(
+                name='delta_out',
+                device_type="cuda",
+                device_id=0,
+                element_type=np.float32,
+                shape=tuple(delta_out.shape),
+                buffer_ptr=delta_out.data_ptr(),
+            )
+            self._onnx_update_modular['d'].run_with_iobinding(delta_io_binding)
+            # -------------------------------------
+            net = net_out
+            delta = delta_out
+            weight = weight_out
+                    
         else: 
             if verbose: print(f'Running pytorch update')
             self._maybe_record_update_dummy_inputs(net, ctx, corr, ii, jj, kk)
