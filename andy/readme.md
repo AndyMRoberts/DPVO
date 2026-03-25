@@ -53,8 +53,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_all_modular \
-    --description "Debugging running of the individual update blocks in onnx format" \
+    --test_run_name tartan_mono_onnx_patchify_checking \
+    --description "all_modular not accurate, checking individual parts. Checking patchify only here" \
     --weights dpvo.pth \
     --split test \
     --power_log \
@@ -64,7 +64,7 @@ python launch_evaluation.py \
     --plot \
     --backend onnx \
     --onnx_dir andy/onnx \
-    --onnx_type all_modular
+    --onnx_type patchify
 ```
 
 

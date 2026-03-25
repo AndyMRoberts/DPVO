@@ -52,6 +52,8 @@ class DPVO:
         self.logging = False
         self.log_start_buffer = 100
         self.log_count = 0
+        self._onnx_update_modular = None
+        self._onnx_update = None
 
         # Snapshot net/ctx/corr/ii/jj/kk for ONNX export dummy inputs (PyTorch update path only).
         self.record_update_dummy_inputs = record_update_dummy_inputs
@@ -156,7 +158,7 @@ class DPVO:
             self.network.cuda()
             self.network.eval()
 
-        # optional ONNX encoders (fnet, inet) for hybrid PyTorch+ONNX
+        # select which onnx setup to use, partial or full onnx incorporation
         if onnx_dir:
             if onnx_type == 'features':
                 self._load_onnx_encoders_features(onnx_dir)
@@ -217,9 +219,16 @@ class DPVO:
                     # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
                     providers = ["CPUExecutionProvider"]
             else:
-                # providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                providers = ["CUDAExecutionProvider"]
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                # providers = ["CUDAExecutionProvider"]
             module_sessions[name] = ort.InferenceSession(module_path, sess_options=so, providers=providers)
+            if verbose:
+                print("=== inputs ===")
+                for i in module_sessions[name].get_inputs():
+                    print(i.name, i.shape, i.type)
+                print("=== outputs ===")
+                for o in module_sessions[name].get_outputs():
+                    print(o.name, o.shape, o.type)
             if verbose: print(f'Onnx {name} module loaded: {module_sessions[name]}')
         self._onnx_update_modular = module_sessions
 
@@ -613,14 +622,6 @@ class DPVO:
             # jj_padded = torch.cat([jj_pad, jj], dim=0)
             # kk_padded = torch.cat([kk_pad, kk], dim=0)
 
-        else:
-            # No padding – run with current edge count
-            net_padded = net
-            ctx_padded = ctx
-            corr_padded = corr
-            ii_padded = ii
-            jj_padded = jj
-            kk_padded = kk
 
         if self._onnx_update is not None:
             if verbose: print(f'Running onnx update')
@@ -687,22 +688,22 @@ class DPVO:
             if verbose: print(f'Running onnx update modular')
 
             # ONNX model is exported in fp32; ensure inputs are fp32 / int64.
-            net_input = net.to(torch.float32, copy=False)
-            ctx_input = ctx.to(torch.float32, copy=False)
-            corr_input = corr.to(torch.float32, copy=False)
-            ii_input = ii.to(torch.int64, copy=False)
+            net_dtype = net.dtype
+            net_f32 = net.to(torch.float32, copy=False)
+            ctx_f32 = ctx.to(torch.float32, copy=False)
+            corr_f32 = corr.to(torch.float32, copy=False)
 
             # Prepare outputs as CUDA tensors and bind with IO binding for zero-copy.
-            Bp, Ep, Dp = net_input.shape
-            corr_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            norm_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            c1_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            c2_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            agg_kk_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            agg_ij_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            net_out = torch.empty((Bp, Ep, Dp), device=net_input.device, dtype=torch.float32)
-            weight_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
-            delta_out = torch.empty((Bp, Ep, 2), device=net_input.device, dtype=torch.float32)
+            Bp, Ep, Dp = net_f32.shape
+            corr_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            norm_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            c1_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            c2_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            agg_kk_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            agg_ij_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            net_out = torch.empty((Bp, Ep, Dp), device=net_f32.device, dtype=torch.float32)
+            weight_out = torch.empty((Bp, Ep, 2), device=net_f32.device, dtype=torch.float32)
+            delta_out = torch.empty((Bp, Ep, 2), device=net_f32.device, dtype=torch.float32)
 
             corr_io_binding = self._onnx_update_modular['corr'].io_binding()  
             norm_io_binding = self._onnx_update_modular['norm'].io_binding()
@@ -715,7 +716,7 @@ class DPVO:
             delta_io_binding = self._onnx_update_modular['d'].io_binding()
 
             # --------------corr--------------
-            bind_torch_inputs(corr_io_binding, {'corr_input': corr_input})
+            bind_torch_inputs(corr_io_binding, {'corr_input': corr_f32})
             corr_io_binding.bind_output(
                 name='corr_out',
                 device_type="cuda",
@@ -726,9 +727,10 @@ class DPVO:
             )
             self._onnx_update_modular['corr'].run_with_iobinding(corr_io_binding)
             # -------------------------------
-            net_input = net + ctx_input + corr_out
+            # Match Update.forward: net = net + inp + corr(corr) then norm(net)
+            net_f32 = net_f32 + ctx_f32 + corr_out
             # --------------norm-------------
-            bind_torch_inputs(norm_io_binding, {'net_input': net_input})
+            bind_torch_inputs(norm_io_binding, {'net_input': net_f32})
             norm_io_binding.bind_output(
                 name='norm_out',
                 device_type="cuda",
@@ -755,8 +757,9 @@ class DPVO:
             )
             self._onnx_update_modular['c1'].run_with_iobinding(c1_io_binding)
             # -----------------c2--------------------
-            net = net + c1_out
-            c2_input = mask_jx * net[:,jx]
+            # Match Update.forward: net = norm_out; net = net + c1(...); net = net + c2(...)
+            net_f32 = norm_out + c1_out
+            c2_input = mask_jx * net_f32[:,jx]
             bind_torch_inputs(c2_io_binding, {'c2_input': c2_input})
             c2_io_binding.bind_output(
                 name='c2_out',
@@ -767,10 +770,10 @@ class DPVO:
                 buffer_ptr=c2_out.data_ptr(),
             )
             self._onnx_update_modular['c2'].run_with_iobinding(c2_io_binding)
-            net = net + c2_out
+            net_f32 = net_f32 + c2_out
             # -----------------agg_kk--------------------
             _, jx = torch.unique(kk, return_inverse=True)
-            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net, 'jx_input': jx})
+            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net_f32, 'jx_input': jx})
             agg_kk_io_binding.bind_output(
                 name='agg_kk_out',
                 device_type="cuda",
@@ -780,11 +783,11 @@ class DPVO:
                 buffer_ptr=agg_kk_out.data_ptr(),
             )
             self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
-            net = net + agg_kk_out
+            net_f32 = net_f32 + agg_kk_out
             # -----------------agg_ij--------------------
             ix = ii*12345 + jj
             _, jx = torch.unique(ix, return_inverse=True)
-            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net, 'jx_input': jx})
+            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net_f32, 'jx_input': jx})
             agg_ij_io_binding.bind_output(
                 name='agg_ij_out',
                 device_type="cuda",
@@ -794,9 +797,9 @@ class DPVO:
                 buffer_ptr=agg_ij_out.data_ptr(),
             )
             self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
-            net = net + agg_ij_out
+            net_f32 = net_f32 + agg_ij_out
             # -----------------gru--------------------
-            bind_torch_inputs(gru_io_binding, {'gru_input': net})
+            bind_torch_inputs(gru_io_binding, {'gru_input': net_f32})
             gru_io_binding.bind_output(
                 name='net_out',
                 device_type="cuda",
@@ -829,7 +832,8 @@ class DPVO:
             )
             self._onnx_update_modular['d'].run_with_iobinding(delta_io_binding)
             # -------------------------------------
-            net = net_out
+            # Keep PyTorch parity: net returns in the original dtype (often fp16 under autocast)
+            net = net_out.to(net_dtype)
             delta = delta_out
             weight = weight_out
                     
