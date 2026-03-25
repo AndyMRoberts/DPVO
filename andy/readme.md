@@ -54,7 +54,7 @@ with onnx
 ```bash
 python launch_evaluation.py \
     --test_run_name tartan_mono_onnx_all_modular \
-    --description "First running of the individual update blocks in onnx format" \
+    --description "Debugging running of the individual update blocks in onnx format" \
     --weights dpvo.pth \
     --split test \
     --power_log \

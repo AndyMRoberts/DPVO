@@ -88,9 +88,13 @@ class Update(nn.Module):
 
         net = net + self.c1(mask_ix * net[:,ix])
         net = net + self.c2(mask_jx * net[:,jx])
-
-        net = net + self.agg_kk(net, kk) # patch to patch information sharing
-        net = net + self.agg_ij(net, ii*12345 + jj) # frame to frame information sharing
+        
+        # torch.unique pulled out of agg to make onnx export easier
+        _, jx = torch.unique(kk, return_inverse=True)
+        net = net + self.agg_kk(net, jx) # patch to patch information sharing
+        ix = ii*12345 + jj
+        _, jx = torch.unique(ix, return_inverse=True)
+        net = net + self.agg_ij(net, jx) # frame to frame information sharing
 
         net = self.gru(net)
 
