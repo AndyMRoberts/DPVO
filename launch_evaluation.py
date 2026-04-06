@@ -13,8 +13,10 @@ import argparse
 import csv
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 
 try:
@@ -248,6 +250,38 @@ def main():
     print(" ".join(cmd))
 
     result = subprocess.run(cmd, cwd=project_root)
+
+    if result.returncode < 0:
+        sig = -result.returncode
+        try:
+            sig_name = signal.Signals(sig).name  # Python 3.8+
+        except (ValueError, AttributeError):
+            sig_name = f"UNKNOWN({sig})"
+        print(
+            f"ERROR: evaluate subprocess exited with return code {result.returncode} "
+            f"(terminated by signal {sig}: {sig_name}). "
+            f"Re-run the child with CUDA_LAUNCH_BLOCKING=1 for a Python/CUDA stack trace.",
+            file=sys.stderr,
+        )
+
+    # region agent log
+    try:
+        with open("/home/campus.ncl.ac.uk/c4071391/Projects/DPVO/.cursor/debug.log", "a") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "timestamp": int(time.time() * 1000),
+                        "location": "launch_evaluation.main",
+                        "message": "subprocess_finished",
+                        "data": {"returncode": result.returncode, "cmd0": cmd[0] if cmd else None},
+                        "hypothesisId": "H1",
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
 
     total_frames = None
     ate_path = os.path.join(run_dir, "ate_results.json")

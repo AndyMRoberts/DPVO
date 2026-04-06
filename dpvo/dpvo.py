@@ -1,3 +1,4 @@
+import io
 import numpy as np
 import torch
 import torch.multiprocessing as mp
@@ -545,25 +546,34 @@ class DPVO:
         self.ran_global_ba[self.n] = True
 
 
-    def update_inner(self, net, corr, ctx, ii, jj, kk):
-        def bind_torch_inputs(io_binding, inputs: dict, device="cuda", device_id=0):
-            for name, tensor in inputs.items():
-                if tensor is None:
-                    continue
+    def bind_torch_inputs(self, io_binding, inputs: dict, device="cuda", device_id=None):
+        """Bind CUDA tensors to ORT IO binding. Uses each tensor's device index unless device_id is set."""
+        for name, tensor in inputs.items():
+            if tensor is None:
+                continue
 
-                assert tensor.is_cuda, f"{name} must be on GPU for zero-copy"
-
-                io_binding.bind_input(
-                    name=name,
-                    device_type=device,
-                    device_id=device_id,
-                    element_type=(
-                        np.float32 if tensor.dtype in (torch.float32, torch.float16)
-                        else np.int64
-                    ),
-                    shape=tuple(tensor.shape),
-                    buffer_ptr=tensor.data_ptr(),
+            assert tensor.is_cuda, f"{name} must be on GPU for zero-copy"
+            if not tensor.is_contiguous():
+                raise RuntimeError(
+                    f"{name} must be contiguous for IO binding (e.g. {name}.contiguous())"
                 )
+            tid = device_id if device_id is not None else tensor.device.index
+            if tid is None:
+                tid = 0
+
+            io_binding.bind_input(
+                name=name,
+                device_type=device,
+                device_id=tid,
+                element_type=(
+                    np.float32 if tensor.dtype in (torch.float32, torch.float16)
+                    else np.int64
+                ),
+                shape=tuple(int(s) for s in tensor.shape),
+                buffer_ptr=tensor.data_ptr(),
+            )
+
+    def update_inner(self, net, corr, ctx, ii, jj, kk):
 
         # Determine real edge count and (optionally) pad to fixed ONNX size
         B, E_real, D = net.shape
@@ -648,7 +658,7 @@ class DPVO:
                 'jj': jj,
                 'kk': kk,
             }
-            bind_torch_inputs(io_binding, feed_tensors)
+            self.bind_torch_inputs(io_binding, feed_tensors)
 
             io_binding.bind_output(
                 name='net_out',
@@ -676,7 +686,7 @@ class DPVO:
             )
 
             # Execute ONNX model with bound CUDA tensors
-            self._onnx_update_.run_with_iobinding(io_binding)
+            self._onnx_update.run_with_iobinding(io_binding)
 
             # Unpad back to the real edge count for downstream PyTorch code
             net = net_out[:, :E_real, :].to(net.dtype)
@@ -716,7 +726,7 @@ class DPVO:
             delta_io_binding = self._onnx_update_modular['d'].io_binding()
 
             # --------------corr--------------
-            bind_torch_inputs(corr_io_binding, {'corr_input': corr_f32})
+            self.bind_torch_inputs(corr_io_binding, {'corr_input': corr_f32})
             corr_io_binding.bind_output(
                 name='corr_out',
                 device_type="cuda",
@@ -730,7 +740,7 @@ class DPVO:
             # Match Update.forward: net = net + inp + corr(corr) then norm(net)
             net_f32 = net_f32 + ctx_f32 + corr_out
             # --------------norm-------------
-            bind_torch_inputs(norm_io_binding, {'net_input': net_f32})
+            self.bind_torch_inputs(norm_io_binding, {'net_input': net_f32})
             norm_io_binding.bind_output(
                 name='norm_out',
                 device_type="cuda",
@@ -746,7 +756,7 @@ class DPVO:
             mask_jx = (jx >= 0).float().reshape(1, -1, 1)
             # -----------------c1--------------------
             c1_input = mask_ix * norm_out[:,ix]
-            bind_torch_inputs(c1_io_binding, {'c1_input': c1_input})
+            self.bind_torch_inputs(c1_io_binding, {'c1_input': c1_input})
             c1_io_binding.bind_output(
                 name='c1_out',
                 device_type="cuda",
@@ -760,7 +770,7 @@ class DPVO:
             # Match Update.forward: net = norm_out; net = net + c1(...); net = net + c2(...)
             net_f32 = norm_out + c1_out
             c2_input = mask_jx * net_f32[:,jx]
-            bind_torch_inputs(c2_io_binding, {'c2_input': c2_input})
+            self.bind_torch_inputs(c2_io_binding, {'c2_input': c2_input})
             c2_io_binding.bind_output(
                 name='c2_out',
                 device_type="cuda",
@@ -773,7 +783,7 @@ class DPVO:
             net_f32 = net_f32 + c2_out
             # -----------------agg_kk--------------------
             _, jx = torch.unique(kk, return_inverse=True)
-            bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net_f32, 'jx_input': jx})
+            self.bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net_f32, 'jx_input': jx})
             agg_kk_io_binding.bind_output(
                 name='agg_kk_out',
                 device_type="cuda",
@@ -787,7 +797,7 @@ class DPVO:
             # -----------------agg_ij--------------------
             ix = ii*12345 + jj
             _, jx = torch.unique(ix, return_inverse=True)
-            bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net_f32, 'jx_input': jx})
+            self.bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net_f32, 'jx_input': jx})
             agg_ij_io_binding.bind_output(
                 name='agg_ij_out',
                 device_type="cuda",
@@ -799,7 +809,7 @@ class DPVO:
             self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
             net_f32 = net_f32 + agg_ij_out
             # -----------------gru--------------------
-            bind_torch_inputs(gru_io_binding, {'gru_input': net_f32})
+            self.bind_torch_inputs(gru_io_binding, {'gru_input': net_f32})
             gru_io_binding.bind_output(
                 name='net_out',
                 device_type="cuda",
@@ -810,7 +820,7 @@ class DPVO:
             )
             self._onnx_update_modular['gru'].run_with_iobinding(gru_io_binding)
             # -----------------weight--------------------
-            bind_torch_inputs(weight_io_binding, {'net_input': net_out})
+            self.bind_torch_inputs(weight_io_binding, {'net_input': net_out})
             weight_io_binding.bind_output(
                 name='weight_out',
                 device_type="cuda",
@@ -821,7 +831,7 @@ class DPVO:
             )
             self._onnx_update_modular['w'].run_with_iobinding(weight_io_binding)
             # -----------------delta--------------------
-            bind_torch_inputs(delta_io_binding, {'net_input': net_out})
+            self.bind_torch_inputs(delta_io_binding, {'net_input': net_out})
             delta_io_binding.bind_output(
                 name='delta_out',
                 device_type="cuda",
@@ -916,6 +926,23 @@ class DPVO:
         t1 = self.M * max((self.n - 0), 0)
         return flatmeshgrid(torch.arange(t0, t1, device="cuda"),
             torch.arange(max(self.n-r, 0), self.n, device="cuda"), indexing='ij')
+    
+    def bind_outputs(self, iobinding, name, output, element_type):
+        if not output.is_contiguous():
+            raise RuntimeError(
+                f"bind_outputs({name}): tensor must be contiguous (torch.empty is contiguous; do not bind a view)"
+            )
+        tid = output.device.index if output.device.type == "cuda" else 0
+        if tid is None:
+            tid = 0
+        iobinding.bind_output(
+            name=name,
+            device_type="cuda",
+            device_id=tid,
+            element_type=element_type,
+            shape=tuple(int(s) for s in output.shape),
+            buffer_ptr=output.data_ptr(),
+        )
 
     def __call__(self, tstamp, image, intrinsics):
         """ track new frame """
@@ -932,6 +959,7 @@ class DPVO:
         image = 2 * (image[None,None] / 255.0) - 0.5
         # stop h/w being dynamic in pathcify to help with onnx export
 
+        patchify_iobindings = True # temp, as iobindings expected to be better than without so old method will be removed if successful
         with autocast(enabled=self.cfg.MIXED_PRECISION):
             if self._onnx_fnet is not None and self._onnx_inet is not None:
                 if verbose: print(f'Running onnx features only')
@@ -945,7 +973,7 @@ class DPVO:
                     centroid_sel_strat=self.cfg.CENTROID_SEL_STRAT,
                     return_color=True
                     )
-            elif self._onnx_patchify is not None:
+            elif self._onnx_patchify is not None and not patchify_iobindings:
                 if verbose: print(f'Running onnx patchify')
                 feed = {"images": image.cpu().numpy().astype(np.float32),
                 "patches_per_image": np.array(self.cfg.PATCHES_PER_FRAME, dtype=np.int64)}
@@ -955,7 +983,49 @@ class DPVO:
                 gmap = torch.from_numpy(gmap).to('cuda')
                 imap = torch.from_numpy(imap).to('cuda')
                 patches = torch.from_numpy(patches).to('cuda')
-                clr = torch.from_numpy(clr).to('cuda')
+                clr = torch.from_numpy(clr).to('cuda')            
+            elif self._onnx_patchify is not None and patchify_iobindings:
+                if verbose: print(f'Running onnx patchify with io bindings')
+                patchify_io_binding = self._onnx_patchify.io_binding()
+                self.bind_torch_inputs(patchify_io_binding, {
+                    "images": image.to(torch.float32, copy=False).contiguous(),
+                    "patches_per_image": torch.tensor(
+                        self.cfg.PATCHES_PER_FRAME, dtype=torch.int64, device=image.device)})
+                # DPVO passes CHW images; after [None,None] layout is (batch, frames, C, H, W).
+                B, Fr, C, H, W = image.shape
+                P = net.P
+                dim = net.DIM
+                M = self.cfg.PATCHES_PER_FRAME
+                # Per net.Patchifier: coords are (Fr, M) so there are Fr*M patches; gmap/imap/
+                # patches/clr use .view(b, -1, ...) and index is length Fr*M (not M when Fr>1).
+                num_patches = Fr * M
+                # Shapes must match exported patchify.onnx (see onnx_conversion / ORT run).
+                fmap_c, gmap_c = 128, 128
+                fmap_out = torch.empty(
+                    (B, Fr, fmap_c, H // 4, W // 4), device=image.device, dtype=torch.float32)
+                gmap_out = torch.empty(
+                    (B, num_patches, gmap_c, P, P), device=image.device, dtype=torch.float32)
+                imap_out = torch.empty(
+                    (B, num_patches, dim, 1, 1), device=image.device, dtype=torch.float32)
+                patches_out = torch.empty(
+                    (B, num_patches, C, P, P), device=image.device, dtype=torch.float32)
+                index_out = torch.empty((num_patches,), device=image.device, dtype=torch.int64)  # bound for ORT; unused (_ elsewhere)
+                clr_out = torch.empty(
+                    (B, num_patches, C), device=image.device, dtype=torch.float32)
+
+                outputs_to_bind = {
+                    'fmap': [fmap_out, np.float32],
+                    'gmap': [gmap_out, np.float32],
+                    'imap': [imap_out, np.float32],
+                    'patches': [patches_out, np.float32],
+                    'index': [index_out, np.int64],
+                    'clr': [clr_out, np.float32],
+                }           
+                for k, v in outputs_to_bind.items():
+                    self.bind_outputs(patchify_io_binding, k, v[0], v[1])
+                self._onnx_patchify.run_with_iobinding(patchify_io_binding)
+                # Match non-iobinding ONNX path: float32 from ORT, not .to(image.dtype) (avoids fp16 under autocast).
+                fmap, gmap, imap, patches, clr = fmap_out, gmap_out, imap_out, patches_out, clr_out
             else:
                 if verbose: print(f'Running pytorch patchify')
                 fmap, gmap, imap, patches, _, clr = \

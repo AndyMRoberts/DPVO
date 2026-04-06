@@ -53,18 +53,19 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_patchify_checking \
-    --description "all_modular not accurate, checking individual parts. Checking patchify only here" \
+    --test_run_name tartan_mono_onnx_patchify_checking_iobindngs \
+    --description "pathify onnx but with iobidings" \
     --weights dpvo.pth \
     --split test \
-    --power_log \
     --viz \
     --show_img \
     --save_trajectory \
     --plot \
     --backend onnx \
     --onnx_dir andy/onnx \
-    --onnx_type patchify
+    --onnx_type patchify \
+    --power_log 
+
 ```
 
 
