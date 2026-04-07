@@ -288,8 +288,8 @@ class DPVO:
                 # TensorRT not installed; try CPU only (requires full CPU build for ConvInteger)
                 providers = ["CPUExecutionProvider"]
         else:
-            # providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            providers = ["CUDAExecutionProvider"]
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            # providers = ["CUDAExecutionProvider"]
         self._onnx_patchify = ort.InferenceSession(patchify_path, sess_options=so, providers=providers)
         if verbose: print(f'Onnx Patchify Loaded: {self._onnx_patchify}')
     
@@ -959,7 +959,7 @@ class DPVO:
         image = 2 * (image[None,None] / 255.0) - 0.5
         # stop h/w being dynamic in pathcify to help with onnx export
 
-        patchify_iobindings = True # temp, as iobindings expected to be better than without so old method will be removed if successful
+        patchify_iobindings = False # temp, as iobindings expected to be better than without so old method will be removed if successful
         with autocast(enabled=self.cfg.MIXED_PRECISION):
             if self._onnx_fnet is not None and self._onnx_inet is not None:
                 if verbose: print(f'Running onnx features only')

@@ -53,8 +53,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_patchify_checking_iobindngs \
-    --description "pathify onnx but with iobidings" \
+    --test_run_name tartan_mono_onnx_patchify_features \
+    --description "features only patchify, to corroborate earlier testing" \
     --weights dpvo.pth \
     --split test \
     --viz \
@@ -63,7 +63,7 @@ python launch_evaluation.py \
     --plot \
     --backend onnx \
     --onnx_dir andy/onnx \
-    --onnx_type patchify \
+    --onnx_type features \
     --power_log 
 
 ```
