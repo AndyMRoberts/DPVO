@@ -1,4 +1,5 @@
 import io
+from itertools import filterfalse
 import numpy as np
 import torch
 import torch.multiprocessing as mp
@@ -38,28 +39,29 @@ Id = SE3.Identity(1, device="cuda")
 
 class DPVO:
 
-    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type='patchify',
-                 record_update_dummy_inputs=True,
+    def __init__(self, cfg, network, ht=480, wd=640, viz=False, onnx_dir=None, onnx_type=None,
+                 record_update_dummy_inputs=False,
                  record_update_dummy_inputs_once=False,
-                 record_update_dummy_inputs_path='/home/campus.ncl.ac.uk/c4071391/Projects/DPVO/andy/onnx/input_payload.pth'):
+                 record_update_dummy_inputs_path='/home/campus.ncl.ac.uk/c4071391/Projects/DPVO/andy/onnx/input_payload'):
         # onnx additions
         self._onnx_fnet = None
         self._onnx_inet = None
         self._onnx_patchify = None
         self._onnx_update = None
         self.use_edges_padding = False
+        self.pytorch_aggs = True # allows using the pytorch agg blocks as they seem to cause loss of accuracy
         self.max_edges_count = []
         self.edges_padded_value = 50000 # used to avoid dynamic axes issue with onnx export
-        self.logging = False
-        self.log_start_buffer = 100
-        self.log_count = 0
+        self.update_logging = False # for recording real update inputs
+        self.log_start_buffer = 1878 # for recording inputs as payloads
+        self.log_count = 0 # for recording inputs as payloads
         self._onnx_update_modular = None
         self._onnx_update = None
 
         # Snapshot net/ctx/corr/ii/jj/kk for ONNX export dummy inputs (PyTorch update path only).
         self.record_update_dummy_inputs = record_update_dummy_inputs
         self.record_update_dummy_inputs_once = record_update_dummy_inputs_once
-        self.record_update_dummy_inputs_path = record_update_dummy_inputs_path
+        self.record_update_dummy_inputs_path = f'{record_update_dummy_inputs_path}_{self.log_start_buffer}.pth'
         self._update_dummy_inputs = None
 
         self.cfg = cfg
@@ -129,9 +131,9 @@ class DPVO:
             self.cfg.CLASSIC_LOOP_CLOSURE = False
             print(f"WARNING: {e}")
 
-    def load_weights(self, network, onnx_dir=None, onnx_type='patchify'):
+    def load_weights(self, network, onnx_dir=None, onnx_type=None):
         # load network from checkpoint file
-        if onnx_type == 'all' or onnx_type == 'all_modular':
+        if onnx_type == 'all' or onnx_type == 'all_modular' and not self.pytorch_aggs:
             # only these values and corrblock are needed when using full onnx implementation
             self.DIM = net.DIM
             self.RES = net.RES
@@ -579,8 +581,8 @@ class DPVO:
         B, E_real, D = net.shape
         _, _, Cc = corr.shape
 
-        if self.logging:
-            self.log_count += 1
+        self.log_count += 1
+        if self.update_logging:
             if self.log_count == self.log_start_buffer:
                 pd.DataFrame(np.array(net.squeeze(0).cpu())).to_csv('net.csv')
                 pd.DataFrame(np.array(ctx.squeeze(0).cpu())).to_csv('ctx.csv')
@@ -695,7 +697,7 @@ class DPVO:
             weight = weight_out[:, :E_real, :]
 
         elif self._onnx_update_modular is not None:
-            if verbose: print(f'Running onnx update modular')
+            if verbose: print(f'Running onnx update modular with pytorch aggs = {self.pytorch_aggs}')
 
             # ONNX model is exported in fp32; ensure inputs are fp32 / int64.
             net_dtype = net.dtype
@@ -781,33 +783,42 @@ class DPVO:
             )
             self._onnx_update_modular['c2'].run_with_iobinding(c2_io_binding)
             net_f32 = net_f32 + c2_out
-            # -----------------agg_kk--------------------
-            _, jx = torch.unique(kk, return_inverse=True)
-            self.bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net_f32, 'jx_input': jx})
-            agg_kk_io_binding.bind_output(
-                name='agg_kk_out',
-                device_type="cuda",
-                device_id=0,
-                element_type=np.float32,
-                shape=tuple(agg_kk_out.shape),
-                buffer_ptr=agg_kk_out.data_ptr(),
-            )
-            self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
-            net_f32 = net_f32 + agg_kk_out
-            # -----------------agg_ij--------------------
-            ix = ii*12345 + jj
-            _, jx = torch.unique(ix, return_inverse=True)
-            self.bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net_f32, 'jx_input': jx})
-            agg_ij_io_binding.bind_output(
-                name='agg_ij_out',
-                device_type="cuda",
-                device_id=0,
-                element_type=np.float32,
-                shape=tuple(agg_ij_out.shape),
-                buffer_ptr=agg_ij_out.data_ptr(),
-            )
-            self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
-            net_f32 = net_f32 + agg_ij_out
+            if not self.pytorch_aggs:
+                # -----------------agg_kk--------------------
+                _, jx = torch.unique(kk, return_inverse=True)
+                self.bind_torch_inputs(agg_kk_io_binding, {'agg_kk_input': net_f32, 'jx_input': jx})
+                agg_kk_io_binding.bind_output(
+                    name='agg_kk_out',
+                    device_type="cuda",
+                    device_id=0,
+                    element_type=np.float32,
+                    shape=tuple(agg_kk_out.shape),
+                    buffer_ptr=agg_kk_out.data_ptr(),
+                )
+                self._onnx_update_modular['agg_kk'].run_with_iobinding(agg_kk_io_binding)
+                net_f32 = net_f32 + agg_kk_out
+                # -----------------agg_ij--------------------
+                ix = ii*12345 + jj
+                _, jx = torch.unique(ix, return_inverse=True)
+                self.bind_torch_inputs(agg_ij_io_binding, {'agg_ij_input': net_f32, 'jx_input': jx})
+                agg_ij_io_binding.bind_output(
+                    name='agg_ij_out',
+                    device_type="cuda",
+                    device_id=0,
+                    element_type=np.float32,
+                    shape=tuple(agg_ij_out.shape),
+                    buffer_ptr=agg_ij_out.data_ptr(),
+                )
+                self._onnx_update_modular['agg_ij'].run_with_iobinding(agg_ij_io_binding)
+                net_f32 = net_f32 + agg_ij_out
+            else:
+                # PyTorch SoftAgg blocks (same as Update.forward); must apply to net_f32 after c1/c2,
+                # not to the incoming `net` (corr/norm/c1/c2 only exist in net_f32 on this code path).
+                _, jx = torch.unique(kk, return_inverse=True)
+                net_f32 = net_f32 + self.network.update.agg_kk(net_f32, jx)
+                ix = ii*12345 + jj
+                _, jx = torch.unique(ix, return_inverse=True)
+                net_f32 = net_f32 + self.network.update.agg_ij(net_f32, jx)
             # -----------------gru--------------------
             self.bind_torch_inputs(gru_io_binding, {'gru_input': net_f32})
             gru_io_binding.bind_output(
@@ -861,20 +872,21 @@ class DPVO:
             return
         if self.record_update_dummy_inputs_once and self._update_dummy_inputs is not None:
             return
-        payload = {
-            'net_in': net.detach().cpu().float().clone(),
-            'inp': ctx.detach().cpu().float().clone(),
-            'corr': corr.detach().cpu().float().clone(),
-            'flow': None,
-            'ii': ii.detach().cpu().clone(),
-            'jj': jj.detach().cpu().clone(),
-            'kk': kk.detach().cpu().clone(),
-        }
-        self._update_dummy_inputs = payload
-        if self.record_update_dummy_inputs_path:
-            torch.save(payload, self.record_update_dummy_inputs_path)
-            if verbose:
-                print(f'[DPVO] Saved update dummy inputs to {self.record_update_dummy_inputs_path}')
+        if self.log_count == self.log_start_buffer:
+            payload = {
+                'net_in': net.detach().cpu().float().clone(),
+                'inp': ctx.detach().cpu().float().clone(),
+                'corr': corr.detach().cpu().float().clone(),
+                'flow': None,
+                'ii': ii.detach().cpu().clone(),
+                'jj': jj.detach().cpu().clone(),
+                'kk': kk.detach().cpu().clone(),
+            }
+            self._update_dummy_inputs = payload
+            if self.record_update_dummy_inputs_path:
+                torch.save(payload, self.record_update_dummy_inputs_path)
+                if verbose:
+                    print(f'[DPVO] Saved update dummy inputs to {self.record_update_dummy_inputs_path}')
 
     def update(self):
         with Timer("other", enabled=self.enable_timing):
@@ -959,7 +971,7 @@ class DPVO:
         image = 2 * (image[None,None] / 255.0) - 0.5
         # stop h/w being dynamic in pathcify to help with onnx export
 
-        patchify_iobindings = False # temp, as iobindings expected to be better than without so old method will be removed if successful
+        patchify_iobindings = True # temp, as iobindings expected to be better than without so old method will be removed if successful
         with autocast(enabled=self.cfg.MIXED_PRECISION):
             if self._onnx_fnet is not None and self._onnx_inet is not None:
                 if verbose: print(f'Running onnx features only')

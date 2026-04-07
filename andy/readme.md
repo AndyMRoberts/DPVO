@@ -53,8 +53,8 @@ with onnx
 
 ```bash
 python launch_evaluation.py \
-    --test_run_name tartan_mono_onnx_patchify_features \
-    --description "features only patchify, to corroborate earlier testing" \
+    --test_run_name tartan_mono_onnx_all_modular_aggs_pytorch \
+    --description "Retrying all modular with the onnx models exported from the 100th iteration payload, this time aggs are in pytorch still" \
     --weights dpvo.pth \
     --split test \
     --viz \
@@ -62,9 +62,9 @@ python launch_evaluation.py \
     --save_trajectory \
     --plot \
     --backend onnx \
+    --power_log \
     --onnx_dir andy/onnx \
-    --onnx_type features \
-    --power_log 
+    --onnx_type all_modular 
 
 ```
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import evo.main_ape as main_ape
+from numba.core.types import NoneType
 import numpy as np
 import torch
 from evo.core.metrics import PoseRelation
@@ -202,11 +203,11 @@ if __name__ == '__main__':
                         help="Data root (overrides default TartanAir path)")
     parser.add_argument('--gt_path', type=str, default=None,
                         help="Ground truth root or file (overrides default)")
-    parser.add_argument('--backend', choices=['pytorch', 'onnx'], default='pytorch',
+    parser.add_argument('--backend', choices=['pytorch', 'onnx'], default='',
                         help='Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)')
-    parser.add_argument('--onnx_dir', type=str, default='andy/onnx',
+    parser.add_argument('--onnx_dir', type=str, default='',
                         help='Directory containing fnet.onnx and inet.onnx (used when --backend onnx)')
-    parser.add_argument('--onnx_type', type=str, default='patchify',
+    parser.add_argument('--onnx_type', type=str, default='',
                         help='select which onnx model version to use e.g. features, patchify')
     args = parser.parse_args()
 

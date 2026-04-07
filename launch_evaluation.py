@@ -148,13 +148,13 @@ def main():
                         help="Extra config options (key value pairs)")
     parser.add_argument("--power_log", action="store_true",
                         help="Profile CPU/GPU power and metrics during run. Requires 'profiler' package.")
-    parser.add_argument("--backend", choices=["pytorch", "onnx"], default="pytorch",
+    parser.add_argument("--backend", choices=["pytorch", "onnx"], default='',
                         help="Run with pure PyTorch or PyTorch+ONNX (encoders via ONNX)")
-    parser.add_argument("--onnx_dir", type=str, default="andy/onnx",
+    parser.add_argument("--onnx_dir", type=str, default='',
                         help="Directory containing fnet.onnx and inet.onnx (used when --backend onnx)")
-    parser.add_argument("--file_to_run", type=str, default=None, help="the evaluation file to be launched")
+    parser.add_argument("--file_to_run", type=str, default='', help="the evaluation file to be launched")
     parser.add_argument("--description", type=str, default="No desription provided")
-    parser.add_argument("--onnx_type", type=str, default="patchify")
+    parser.add_argument("--onnx_type", type=str, default='')
     
     args = parser.parse_args()
 
